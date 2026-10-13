@@ -14,5 +14,8 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "postinstall": "pnpm build:libs"
+  },
+  "devDependencies": {
+    "esbuild": "0.21.5"
   }
 }

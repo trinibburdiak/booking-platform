@@ -84,18 +84,22 @@ export const weeklyRangeSchema = z.object({
 export const scheduleSchema = z.object({ ranges: z.array(weeklyRangeSchema).max(50) });
 export type ScheduleInput = z.infer<typeof scheduleSchema>;
 
+/** Los inputs vacíos de un formulario llegan como "": se tratan como ausentes. */
+const optionalTime = z.preprocess((v) => (v === '' || v === null ? undefined : v), time.optional());
+
 export const exceptionSchema = z
   .object({
     date: isoDate,
     type: z.enum(['CLOSED', 'EXTRA_HOURS']),
-    startTime: time.optional(),
-    endTime: time.optional(),
+    startTime: optionalTime,
+    endTime: optionalTime,
     reason: z.string().max(200).optional(),
   })
   .refine((e) => e.type === 'CLOSED' || (e.startTime && e.endTime), {
     message: 'Las horas extra necesitan inicio y fin',
+    path: ['startTime'],
   })
-  .refine((e) => !!e.startTime === !!e.endTime, { message: 'Indicá inicio y fin, o ninguno' });
+  .refine((e) => !!e.startTime === !!e.endTime, { message: 'Indicá inicio y fin, o ninguno', path: ['startTime'] });
 export type ExceptionInput = z.infer<typeof exceptionSchema>;
 
 export interface PublicBusiness {
