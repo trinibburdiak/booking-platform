@@ -15,7 +15,6 @@
   "dependencies": {
     "@nestjs/common": "11.0.11",
     "@nestjs/core": "11.0.11",
-    "@nestjs/event-emitter": "3.0.1",
     "@nestjs/jwt": "11.0.0",
     "@nestjs/platform-express": "11.0.11",
     "@nestjs/platform-socket.io": "11.0.11",
@@ -31,6 +30,7 @@
     "dotenv": "16.4.7",
     "helmet": "8.0.0",
     "ioredis": "5.4.2",
+    "kafkajs": "2.2.4",
     "luxon": "3.5.0",
     "nodemailer": "6.9.16",
     "reflect-metadata": "0.2.2",
@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@nestjs/testing": "11.0.11",
+    "@testcontainers/kafka": "10.18.0",
     "@testcontainers/postgresql": "10.18.0",
     "@types/cookie-parser": "1.4.8",
     "@types/express": "5.0.0",

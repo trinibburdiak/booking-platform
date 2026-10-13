@@ -5,13 +5,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Booking, Business, Prisma, Professional, Service } from '@prisma/client';
 import { canClientCancel, localDateOf } from '@turnos/availability';
 import { BookingView, CreateBookingInput, RescheduleBookingInput } from '@turnos/contracts';
 import { randomBytes } from 'crypto';
 import { AuthUser, Tenant } from '../common/auth';
-import { bookingEvent, BookingEventPayload, BookingEventType } from '../events/booking-events';
+import { bookingEvent, BookingEventPayload, BookingEventType, outboxRow } from '../events/booking-events';
+import { OutboxRelay } from '../kafka/outbox.relay';
 import { PrismaService } from '../prisma/prisma.service';
 import { AvailabilityCache } from '../redis/redis.module';
 import { ACTIVE_STATUSES, AvailabilityService } from './availability.service';
@@ -37,7 +37,7 @@ export class BookingService {
     private readonly prisma: PrismaService,
     private readonly availability: AvailabilityService,
     private readonly cache: AvailabilityCache,
-    private readonly events: EventEmitter2,
+    private readonly relay: OutboxRelay,
   ) {}
 
   /**
@@ -57,7 +57,9 @@ export class BookingService {
     const slot = await this.findSlot(business, service, start, input.professionalId);
 
     try {
-      const booking = await this.prisma.booking.create({
+      // El turno y su evento se guardan en la misma transacción (outbox).
+      const booking = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.booking.create({
         data: {
           businessId: business.id,
           professionalId: slot.professionalId,
@@ -70,8 +72,11 @@ export class BookingService {
           idempotencyKey,
         },
         include: withRelations,
+        });
+        await this.writeEvent(tx, 'booking.confirmed', created);
+        return created;
       });
-      await this.publish('booking.confirmed', booking);
+      await this.afterCommit(booking);
       return this.toView(booking);
     } catch (e) {
       const overlap = isOverlapViolation(e);
@@ -126,14 +131,17 @@ export class BookingService {
     await this.findSlot(booking.business, booking.service, start, professionalId, booking.id);
 
     try {
-      const updated = await this.prisma.booking.update({
-        where: { id: booking.id },
-        data: { professionalId, ...this.period(start, booking.service) },
-        include: withRelations,
+      const previous = { professionalId: booking.professionalId, start: booking.startsAt.toISOString() };
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const u = await tx.booking.update({
+          where: { id: booking.id },
+          data: { professionalId, ...this.period(start, booking.service) },
+          include: withRelations,
+        });
+        await this.writeEvent(tx, 'booking.rescheduled', u, { previous });
+        return u;
       });
-      await this.publish('booking.rescheduled', updated, {
-        previous: { professionalId: booking.professionalId, start: booking.startsAt.toISOString() },
-      });
+      await this.afterCommit(updated, previous);
       return this.toView(updated);
     } catch (e) {
       if (isOverlapViolation(e)) throw slotTaken();
@@ -171,12 +179,16 @@ export class BookingService {
       throw new ConflictException(`No se puede marcar asistencia de un turno ${booking.status}`);
     }
     if (booking.startsAt > new Date()) throw new BadRequestException('El turno todavía no empezó');
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: { status: attended ? 'ATTENDED' : 'NO_SHOW' },
-      include: withRelations,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.booking.update({
+        where: { id },
+        data: { status: attended ? 'ATTENDED' : 'NO_SHOW' },
+        include: withRelations,
+      });
+      await this.writeEvent(tx, 'booking.attendance', u);
+      return u;
     });
-    await this.publish('booking.attendance', updated);
+    this.relay.kick();
     return this.toView(updated);
   }
 
@@ -192,15 +204,17 @@ export class BookingService {
     });
     let marked = 0;
     for (const b of stale) {
-      const { count } = await this.prisma.booking.updateMany({
-        where: { id: b.id, status: 'CONFIRMED' },
-        data: { status: 'NO_SHOW' },
+      const done = await this.prisma.$transaction(async (tx) => {
+        const { count } = await tx.booking.updateMany({
+          where: { id: b.id, status: 'CONFIRMED' },
+          data: { status: 'NO_SHOW' },
+        });
+        if (count) await this.writeEvent(tx, 'booking.no_show', { ...b, status: 'NO_SHOW' });
+        return count > 0;
       });
-      if (count) {
-        marked++;
-        await this.publish('booking.no_show', { ...b, status: 'NO_SHOW' });
-      }
+      if (done) marked++;
     }
+    if (marked) this.relay.kick();
     return marked;
   }
 
@@ -237,21 +251,43 @@ export class BookingService {
       );
     }
     // Condición en el WHERE para que dos cancelaciones simultáneas no pisen otro estado.
-    const { count } = await this.prisma.booking.updateMany({
-      where: { id: booking.id, status: { in: [...ACTIVE_STATUSES] } },
-      data: { status: 'CANCELLED', cancelledAt: new Date() },
-    });
-    if (!count) throw new ConflictException('El turno ya no está activo');
     const cancelled = { ...booking, status: 'CANCELLED' as const };
-    await this.publish('booking.cancelled', cancelled, { cancelledBy: applyClientPolicy ? 'CLIENT' : 'BUSINESS' });
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.booking.updateMany({
+        where: { id: booking.id, status: { in: [...ACTIVE_STATUSES] } },
+        data: { status: 'CANCELLED', cancelledAt: new Date() },
+      });
+      if (!count) throw new ConflictException('El turno ya no está activo');
+      await this.writeEvent(tx, 'booking.cancelled', cancelled, { cancelledBy: applyClientPolicy ? 'CLIENT' : 'BUSINESS' });
+    });
+    await this.afterCommit(cancelled);
     return this.toView(cancelled);
   }
 
+  /** Escribe el evento en el outbox, dentro de la transacción del cambio. */
+  private async writeEvent(
+    tx: Prisma.TransactionClient,
+    type: BookingEventType,
+    b: Booking,
+    extra: Partial<BookingEventPayload> = {},
+  ) {
+    const event = bookingEvent(type, b.businessId, {
+      bookingId: b.id,
+      professionalId: b.professionalId,
+      clientId: b.clientId,
+      start: b.startsAt.toISOString(),
+      end: b.endsAt.toISOString(),
+      status: b.status,
+      ...extra,
+    });
+    await tx.outboxEvent.create({ data: outboxRow(event) });
+  }
+
   /**
-   * Después de cada cambio: invalida el caché de disponibilidad (de forma síncrona,
-   * para que la próxima consulta ya lo vea) y publica el evento de dominio.
+   * Después del commit: invalida el caché de disponibilidad (de forma síncrona, para
+   * que la próxima consulta ya lo vea) y despierta al relay para publicar enseguida.
    */
-  private async publish(type: BookingEventType, b: BookingWithRelations, extra: Partial<BookingEventPayload> = {}) {
+  private async afterCommit(b: BookingWithRelations, previous?: { professionalId: string; start: string }) {
     const tz = b.business.timezone;
     const days = (pro: string, start: Date) => {
       const day = localDateOf(start, tz);
@@ -260,19 +296,8 @@ export class BookingService {
       return this.cache.invalidateDay(pro, day, before);
     };
     await days(b.professionalId, b.startsAt);
-    if (extra.previous) await days(extra.previous.professionalId, new Date(extra.previous.start));
-
-    this.events.emit(
-      type,
-      bookingEvent(type, b.businessId, {
-        bookingId: b.id,
-        professionalId: b.professionalId,
-        clientId: b.clientId,
-        start: b.startsAt.toISOString(),
-        end: b.endsAt.toISOString(),
-        ...extra,
-      }),
-    );
+    if (previous) await days(previous.professionalId, new Date(previous.start));
+    this.relay.kick();
   }
 
   private assertActive(booking: Booking) {

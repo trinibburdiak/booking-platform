@@ -1,11 +1,10 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { NotificationType } from '@prisma/client';
 import { Job, Queue, Worker } from 'bullmq';
-import { BookingEvent } from '../events/booking-events';
+import { BOOKING_EVENTS_TOPIC, BookingEvent } from '../events/booking-events';
+import { KafkaService } from '../kafka/kafka.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { redisOptions } from '../redis/redis.module';
-import { AgendaGateway } from './agenda.gateway';
 import { MailService } from './mail.service';
 import { BookingEmailData, cancelledEmail, confirmedEmail, reminderEmail, rescheduledEmail } from './templates';
 
@@ -17,13 +16,14 @@ interface ReminderJob {
   start: string;
 }
 
+export const NOTIFICATIONS_GROUP = 'notifications';
+
 /**
- * Reacciona a los eventos de turnos: avisa a la agenda por WebSocket, manda los emails
- * y programa el recordatorio. El recordatorio es un job diferido de BullMQ con
+ * Consume `booking.events` de Kafka: manda los emails y programa el recordatorio. El recordatorio es un job diferido de BullMQ con
  * `jobId = bookingId`: reprogramar es borrar el job y crear otro, sin duplicados.
  */
 @Injectable()
-export class NotificationsService implements OnModuleInit, OnModuleDestroy {
+export class NotificationsService implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(NotificationsService.name);
   readonly reminders = new Queue<ReminderJob>(REMINDERS_QUEUE, {
     connection: redisOptions(),
@@ -34,7 +34,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
-    private readonly gateway: AgendaGateway,
+    private readonly kafka: KafkaService,
   ) {}
 
   onModuleInit() {
@@ -44,36 +44,66 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     this.worker.on('failed', (job, err) => this.logger.error(`Recordatorio ${job?.id} falló: ${err.message}`));
   }
 
+  async onApplicationBootstrap() {
+    await this.kafka.consume({
+      groupId: NOTIFICATIONS_GROUP,
+      topic: BOOKING_EVENTS_TOPIC,
+      fromBeginning: true,
+      handler: async ({ message }) => {
+        if (!message.value) return;
+        await this.handle(JSON.parse(message.value.toString()) as BookingEvent);
+      },
+    });
+  }
+
+  /**
+   * Kafka entrega "al menos una vez": el evento se "reclama" en processed_events antes
+   * de procesarlo y, si algo falla, se libera para que el reintento lo vuelva a tomar.
+   */
+  async handle(event: BookingEvent) {
+    const { count } = await this.prisma.processedEvent.createMany({
+      data: [{ consumer: NOTIFICATIONS_GROUP, eventId: event.eventId }],
+      skipDuplicates: true,
+    });
+    if (!count) return; // duplicado
+    try {
+      switch (event.eventType) {
+        case 'booking.confirmed':
+          await this.onConfirmed(event);
+          break;
+        case 'booking.rescheduled':
+          await this.onRescheduled(event);
+          break;
+        case 'booking.cancelled':
+          await this.onCancelled(event);
+          break;
+      }
+    } catch (e) {
+      await this.prisma.processedEvent.delete({
+        where: { consumer_eventId: { consumer: NOTIFICATIONS_GROUP, eventId: event.eventId } },
+      });
+      throw e;
+    }
+  }
+
   async onModuleDestroy() {
     await this.worker?.close();
     await this.reminders.close();
   }
 
-  @OnEvent('booking.confirmed', { async: true })
-  async onConfirmed(event: BookingEvent) {
-    this.gateway.notify(event);
+  private async onConfirmed(event: BookingEvent) {
     await this.email(event, 'BOOKING_CONFIRMED');
     await this.scheduleReminder(event.payload.bookingId, new Date(event.payload.start));
   }
 
-  @OnEvent('booking.rescheduled', { async: true })
-  async onRescheduled(event: BookingEvent) {
-    this.gateway.notify(event);
+  private async onRescheduled(event: BookingEvent) {
     await this.email(event, 'BOOKING_RESCHEDULED');
     await this.scheduleReminder(event.payload.bookingId, new Date(event.payload.start));
   }
 
-  @OnEvent('booking.cancelled', { async: true })
-  async onCancelled(event: BookingEvent) {
-    this.gateway.notify(event);
+  private async onCancelled(event: BookingEvent) {
     await this.reminders.remove(event.payload.bookingId);
     await this.email(event, 'BOOKING_CANCELLED');
-  }
-
-  @OnEvent('booking.attendance', { async: true })
-  @OnEvent('booking.no_show', { async: true })
-  onAgendaChange(event: BookingEvent) {
-    this.gateway.notify(event);
   }
 
   /** Si faltan menos de 24 h, no hay recordatorio: ya llegó el email de confirmación. */

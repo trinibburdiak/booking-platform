@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { KafkaContainer, StartedKafkaContainer } from '@testcontainers/kafka';
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { execSync } from 'child_process';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
@@ -15,16 +16,20 @@ export interface TestContext {
   prisma: PrismaService;
   container: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
+  kafka: StartedKafkaContainer;
   url: string;
   http: () => ReturnType<typeof request>;
 }
 
-/** Postgres y Redis reales en contenedores descartables, con las migraciones aplicadas. */
+/** Postgres, Redis y Kafka reales en contenedores descartables, con las migraciones aplicadas. */
 export async function startApp(): Promise<TestContext> {
-  const [container, redis] = await Promise.all([
+  const [container, redis, kafka] = await Promise.all([
     new PostgreSqlContainer('postgres:16-alpine').start(),
     new GenericContainer('redis:7-alpine').withExposedPorts(6379).start(),
+    new KafkaContainer('confluentinc/cp-kafka:7.7.1').withKraft().start(),
   ]);
+  process.env.KAFKA_BROKERS = `${kafka.getHost()}:${kafka.getMappedPort(9093)}`;
+  process.env.OUTBOX_POLL_MS = '200';
   process.env.DATABASE_URL = container.getConnectionUri();
   process.env.REDIS_URL = `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`;
   // Vacío (no borrado): Prisma recarga el .env y volvería a ponerlo. Emails a un transporte en memoria.
@@ -43,6 +48,7 @@ export async function startApp(): Promise<TestContext> {
     prisma: app.get(PrismaService),
     container,
     redis,
+    kafka,
     url: await app.getUrl(),
     http: () => request(app.getHttpServer()),
   };
@@ -50,7 +56,7 @@ export async function startApp(): Promise<TestContext> {
 
 export async function stopApp(ctx: TestContext | undefined) {
   await ctx?.app.close();
-  await Promise.all([ctx?.container.stop(), ctx?.redis.stop()]);
+  await Promise.all([ctx?.container.stop(), ctx?.redis.stop(), ctx?.kafka.stop()]);
 }
 
 export async function registerUser(ctx: TestContext, name = 'Usuario') {

@@ -1,10 +1,10 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
 import { BookingModule } from './booking/booking.module';
 import { BusinessModule } from './business/business.module';
+import { KafkaModule } from './kafka/kafka.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PrismaModule, PrismaService } from './prisma/prisma.service';
 import { RedisModule } from './redis/redis.module';
@@ -26,9 +26,9 @@ class HealthController {
       throttlers: [{ ttl: 60_000, limit: 300 }],
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
-    EventEmitterModule.forRoot({ wildcard: false }),
     PrismaModule,
     RedisModule,
+    KafkaModule,
     AuthModule,
     BusinessModule,
     BookingModule,

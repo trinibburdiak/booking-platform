@@ -11,7 +11,7 @@ Plataforma multi-tenant de turnos online: cada negocio (peluquería, consultorio
 | 1. Base | Monorepo, Docker Compose, CI, seed del negocio demo | ✅ |
 | 2. Monolito modular | NestJS (auth, business, booking), disponibilidad, reserva con exclusion constraint, cancelación y reprogramación. Front: página pública, wizard de reserva, mis turnos, panel y configuración | ✅ |
 | 3. Agenda y notificaciones | Agenda con FullCalendar (día/semana, drag & drop), tiempo real con Socket.IO, emails de confirmación/reprogramación/cancelación, recordatorio 24 h antes y `mark-no-shows` con BullMQ, caché de disponibilidad en Redis | ✅ |
-| 4. Eventos | Kafka + outbox | pendiente |
+| 4. Eventos | Outbox en Postgres + relay a Kafka (`booking.events`, clave = bookingId); notificaciones y agenda en vivo consumen de Kafka con idempotencia | ✅ |
 | 5. Microservicios | Separar servicios, gateway | pendiente |
 | 6. Extras | Seña con Mercado Pago sandbox, drag & drop, Playwright | pendiente |
 
@@ -21,7 +21,7 @@ Requisitos: Node 22, pnpm 10, Docker.
 
 ```bash
 pnpm install
-pnpm db:up          # Postgres (5544), Redis (6380), Mailpit (8026)
+pnpm db:up          # Postgres (5544), Redis (6380), Mailpit (8026), Kafka (9094), Kafka UI (8090)
 cp apps/api/.env.example apps/api/.env
 pnpm db:migrate
 pnpm db:seed        # Barbería Demo con turnos cargados
@@ -29,7 +29,7 @@ pnpm dev:api        # http://localhost:3000/api/v1 · Swagger en /docs
 pnpm dev:web        # http://localhost:5180
 ```
 
-Los emails no salen a internet: se ven en Mailpit, http://localhost:8026.
+Los emails no salen a internet: se ven en Mailpit, http://localhost:8026. Los eventos se ven en Kafka UI, http://localhost:8090.
 
 Usuarios de prueba (contraseña `demo1234`): `cliente@turnos.dev` (cliente) y `demo@turnos.dev` (dueña de la Barbería Demo).
 
@@ -37,7 +37,7 @@ Usuarios de prueba (contraseña `demo1234`): `cliente@turnos.dev` (cliente) y `d
 
 ```bash
 pnpm --filter @turnos/availability test   # unitarios de la lógica de disponibilidad
-pnpm --filter @turnos/api test            # integración contra Postgres real (Testcontainers, necesita Docker)
+pnpm --filter @turnos/api test            # integración contra Postgres, Redis y Kafka reales (Testcontainers, necesita Docker)
 ```
 
 Lo que cubren:
@@ -49,6 +49,7 @@ Lo que cubren:
 - **Políticas:** cancelación dentro del plazo, link de cancelación de un solo uso, reprogramar a un horario ocupado.
 - **Notificaciones:** email de confirmación con link de cancelación; recordatorio programado 24 h antes con `jobId = bookingId`, que se borra al cancelar y se reemplaza al reprogramar; el worker no manda recordatorios de turnos movidos.
 - **Tiempo real:** el panel recibe el turno nuevo por WebSocket; quien no es del negocio no puede suscribirse.
+- **Outbox y Kafka:** el turno y su evento se guardan juntos; una reserva rechazada no deja eventos; los eventos de un turno quedan en orden; un evento entregado dos veces manda un solo email.
 - **Caché y jobs:** la disponibilidad se cachea en Redis y se invalida al cambiar el horario; `mark-no-shows` solo toca confirmados vencidos hace más de 24 h.
 
 ## Estructura
@@ -68,6 +69,7 @@ docs/adr/         decisiones de arquitectura
 
 - [ADR 0001 — Exclusion constraint en lugar de locks en código](docs/adr/0001-exclusion-constraint.md)
 - [ADR 0002 — Calcular la disponibilidad en vez de guardarla](docs/adr/0002-disponibilidad-calculada.md)
+- [ADR 0003 — Eventos con outbox y Kafka](docs/adr/0003-outbox-y-kafka.md)
 
 Detalles:
 
@@ -76,7 +78,7 @@ Detalles:
 - Access token JWT de 15 min en memoria; refresh token rotativo en cookie `httpOnly`, con detección de reuso.
 - La `Idempotency-Key` se genera al abrir el paso de confirmación: un doble click no reserva dos veces.
 - Las fechas siempre se muestran en la zona horaria del negocio, no en la del navegador.
-- Los turnos publican eventos de dominio (`booking.confirmed`, `booking.cancelled`, `booking.rescheduled`…) con la forma que tendrán en Kafka. Hoy viajan por un EventEmitter en memoria; notificaciones reacciona a ellos sin que booking la conozca.
+- Los turnos publican eventos de dominio (`booking.confirmed`, `booking.cancelled`, `booking.rescheduled`…) con el patrón outbox: se guardan en la misma transacción que el cambio y un relay los manda a Kafka. Notificaciones reacciona a ellos sin que booking la conozca.
 - Recordatorios con jobs diferidos de BullMQ (no un cron que recorra la tabla): reprogramar es borrar el job y crear otro.
 - Al generar migraciones con Prisma, revisar que no agregue `ALTER COLUMN "period" DROP DEFAULT`: confunde la columna generada con un default y la migración falla.
 

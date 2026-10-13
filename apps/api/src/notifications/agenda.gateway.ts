@@ -1,27 +1,44 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { hostname } from 'os';
 import { Server, Socket } from 'socket.io';
-import { BookingEvent } from '../events/booking-events';
+import { BOOKING_EVENTS_TOPIC, BookingEvent } from '../events/booking-events';
+import { KafkaService } from '../kafka/kafka.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
  * WebSocket de la agenda. Al conectarse, el cliente manda su access token y el
  * negocio que quiere ver; solo entra a la sala `business:{id}` si tiene membresía.
  * Cuando cambia un turno, el panel recibe `agenda` y vuelve a pedir la agenda.
+ *
+ * Consume Kafka con un grupo propio por instancia: cada instancia de la API recibe
+ * todos los eventos y avisa a los sockets conectados a ella.
  */
 @WebSocketGateway({
   path: '/socket.io',
   cors: { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5180', credentials: true },
 })
-export class AgendaGateway implements OnGatewayConnection {
+export class AgendaGateway implements OnGatewayConnection, OnApplicationBootstrap {
   private readonly logger = new Logger(AgendaGateway.name);
   @WebSocketServer() server!: Server;
 
   constructor(
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
+    private readonly kafka: KafkaService,
   ) {}
+
+  async onApplicationBootstrap() {
+    await this.kafka.consume({
+      groupId: `agenda-realtime-${hostname()}-${process.pid}`,
+      topic: BOOKING_EVENTS_TOPIC,
+      fromBeginning: false,
+      handler: async ({ message }) => {
+        if (message.value) this.notify(JSON.parse(message.value.toString()) as BookingEvent);
+      },
+    });
+  }
 
   async handleConnection(client: Socket) {
     try {
