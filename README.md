@@ -10,7 +10,7 @@ Plataforma multi-tenant de turnos online: cada negocio (peluquería, consultorio
 | --- | --- | --- |
 | 1. Base | Monorepo, Docker Compose, CI, seed del negocio demo | ✅ |
 | 2. Monolito modular | NestJS (auth, business, booking), disponibilidad, reserva con exclusion constraint, cancelación y reprogramación. Front: página pública, wizard de reserva, mis turnos, panel y configuración | ✅ |
-| 3. Agenda y notificaciones | FullCalendar, WebSocket, emails y recordatorios con BullMQ | pendiente |
+| 3. Agenda y notificaciones | Agenda con FullCalendar (día/semana, drag & drop), tiempo real con Socket.IO, emails de confirmación/reprogramación/cancelación, recordatorio 24 h antes y `mark-no-shows` con BullMQ, caché de disponibilidad en Redis | ✅ |
 | 4. Eventos | Kafka + outbox | pendiente |
 | 5. Microservicios | Separar servicios, gateway | pendiente |
 | 6. Extras | Seña con Mercado Pago sandbox, drag & drop, Playwright | pendiente |
@@ -29,6 +29,8 @@ pnpm dev:api        # http://localhost:3000/api/v1 · Swagger en /docs
 pnpm dev:web        # http://localhost:5180
 ```
 
+Los emails no salen a internet: se ven en Mailpit, http://localhost:8026.
+
 Usuarios de prueba (contraseña `demo1234`): `cliente@turnos.dev` (cliente) y `demo@turnos.dev` (dueña de la Barbería Demo).
 
 ## Tests
@@ -45,6 +47,9 @@ Lo que cubren:
 - **Idempotencia:** dos requests con la misma `Idempotency-Key` devuelven el mismo turno.
 - **Multi-tenancy y roles:** un dueño no puede leer la agenda ni tocar recursos de otro negocio; el staff no puede crear servicios ni editar horarios ajenos.
 - **Políticas:** cancelación dentro del plazo, link de cancelación de un solo uso, reprogramar a un horario ocupado.
+- **Notificaciones:** email de confirmación con link de cancelación; recordatorio programado 24 h antes con `jobId = bookingId`, que se borra al cancelar y se reemplaza al reprogramar; el worker no manda recordatorios de turnos movidos.
+- **Tiempo real:** el panel recibe el turno nuevo por WebSocket; quien no es del negocio no puede suscribirse.
+- **Caché y jobs:** la disponibilidad se cachea en Redis y se invalida al cambiar el horario; `mark-no-shows` solo toca confirmados vencidos hace más de 24 h.
 
 ## Estructura
 
@@ -71,6 +76,9 @@ Detalles:
 - Access token JWT de 15 min en memoria; refresh token rotativo en cookie `httpOnly`, con detección de reuso.
 - La `Idempotency-Key` se genera al abrir el paso de confirmación: un doble click no reserva dos veces.
 - Las fechas siempre se muestran en la zona horaria del negocio, no en la del navegador.
+- Los turnos publican eventos de dominio (`booking.confirmed`, `booking.cancelled`, `booking.rescheduled`…) con la forma que tendrán en Kafka. Hoy viajan por un EventEmitter en memoria; notificaciones reacciona a ellos sin que booking la conozca.
+- Recordatorios con jobs diferidos de BullMQ (no un cron que recorra la tabla): reprogramar es borrar el job y crear otro.
+- Al generar migraciones con Prisma, revisar que no agregue `ALTER COLUMN "period" DROP DEFAULT`: confunde la columna generada con un default y la migración falla.
 
 ## API
 

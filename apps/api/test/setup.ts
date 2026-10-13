@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { execSync } from 'child_process';
+import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import request from 'supertest';
@@ -13,13 +14,21 @@ export interface TestContext {
   app: INestApplication;
   prisma: PrismaService;
   container: StartedPostgreSqlContainer;
+  redis: StartedTestContainer;
+  url: string;
   http: () => ReturnType<typeof request>;
 }
 
-/** Postgres real en un contenedor descartable, con las migraciones aplicadas. */
+/** Postgres y Redis reales en contenedores descartables, con las migraciones aplicadas. */
 export async function startApp(): Promise<TestContext> {
-  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const [container, redis] = await Promise.all([
+    new PostgreSqlContainer('postgres:16-alpine').start(),
+    new GenericContainer('redis:7-alpine').withExposedPorts(6379).start(),
+  ]);
   process.env.DATABASE_URL = container.getConnectionUri();
+  process.env.REDIS_URL = `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`;
+  // Vacío (no borrado): Prisma recarga el .env y volvería a ponerlo. Emails a un transporte en memoria.
+  process.env.SMTP_HOST = '';
   execSync('npx prisma migrate deploy', {
     cwd: join(__dirname, '..'),
     env: process.env,
@@ -28,18 +37,20 @@ export async function startApp(): Promise<TestContext> {
 
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = configureApp(moduleRef.createNestApplication());
-  await app.init();
+  await app.listen(0);
   return {
     app,
     prisma: app.get(PrismaService),
     container,
+    redis,
+    url: await app.getUrl(),
     http: () => request(app.getHttpServer()),
   };
 }
 
 export async function stopApp(ctx: TestContext | undefined) {
   await ctx?.app.close();
-  await ctx?.container.stop();
+  await Promise.all([ctx?.container.stop(), ctx?.redis.stop()]);
 }
 
 export async function registerUser(ctx: TestContext, name = 'Usuario') {

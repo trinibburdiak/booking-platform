@@ -1,164 +1,224 @@
 import type { BookingView } from '@turnos/contracts';
+import { DatesSetArg, EventClickArg, EventDropArg, EventInput } from '@fullcalendar/core';
+import esLocale from '@fullcalendar/core/locales/es';
+import interactionPlugin from '@fullcalendar/interaction';
+import luxon3Plugin from '@fullcalendar/luxon3';
+import FullCalendar from '@fullcalendar/react';
+import timeGridPlugin from '@fullcalendar/timegrid';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { DateTime } from 'luxon';
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { api, errorMessage } from '../../shared/lib/api';
-import { capitalize, formatPrice, formatTime } from '../../shared/lib/format';
+import { formatDateTime, formatPrice, formatTime } from '../../shared/lib/format';
 import { Alert, EmptyState, Modal, Spinner, StatusBadge } from '../../shared/ui';
-import { useBusiness, useBusinessKey, useProfessionals } from './hooks';
+import { useAuth } from '../auth/useAuth';
+import { ProfessionalRow, useBusiness, useBusinessKey, useProfessionals } from './hooks';
+import { AgendaPush, useAgendaSocket } from './useAgendaSocket';
 
-const HOUR_PX = 64;
-const BLOCK_STYLE: Record<string, string> = {
-  CONFIRMED: 'border-brand-500 bg-brand-50 text-brand-700',
-  PENDING: 'border-amber-400 bg-amber-50 text-amber-800',
-  ATTENDED: 'border-sky-400 bg-sky-50 text-sky-800',
-  NO_SHOW: 'border-red-300 bg-red-50 text-red-700',
-  CANCELLED: 'border-stone-300 bg-stone-50 text-stone-400 line-through',
-  EXPIRED: 'border-stone-300 bg-stone-50 text-stone-400 line-through',
+/** Un color por profesional, estable según el orden. */
+const PALETTE = ['#256449', '#2563eb', '#b45309', '#9333ea', '#be123c', '#0e7490'];
+
+const INACTIVE = ['CANCELLED', 'EXPIRED'];
+const ACTIVE = ['PENDING', 'CONFIRMED'];
+
+const PUSH_LABEL: Record<string, string> = {
+  'booking.confirmed': 'Nuevo turno',
+  'booking.cancelled': 'Turno cancelado',
+  'booking.rescheduled': 'Turno reprogramado',
 };
 
-/** Vista día por profesional. En la etapa 3 se reemplaza por FullCalendar con drag & drop y tiempo real. */
+/**
+ * Agenda del negocio: vista día/semana con FullCalendar, en la zona horaria del negocio.
+ * Los turnos se arrastran para reprogramarlos y la agenda se actualiza sola por WebSocket.
+ */
 export function AgendaPage() {
   const business = useBusiness();
   const pros = useProfessionals();
   const key = useBusinessKey();
-  const zone = business.data?.timezone ?? 'UTC';
-  const [day, setDay] = useState(() => DateTime.now().setZone(zone).toISODate()!);
+  const qc = useQueryClient();
+  const { businessId } = useAuth();
+  const [range, setRange] = useState<{ from: string; to: string } | null>(null);
+  const [proFilter, setProFilter] = useState('all');
   const [showCancelled, setShowCancelled] = useState(false);
   const [open, setOpen] = useState<BookingView | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [dropError, setDropError] = useState<string | null>(null);
+  const zone = business.data?.timezone ?? 'UTC';
 
-  const start = DateTime.fromISO(day, { zone }).startOf('day');
+  const onPush = useCallback(
+    (e: AgendaPush) => {
+      const label = PUSH_LABEL[e.type];
+      if (!label) return;
+      setToast(`${label}: ${formatDateTime(e.start, zone)} h`);
+      window.setTimeout(() => setToast(null), 5000);
+    },
+    [zone],
+  );
+  const live = useAgendaSocket(businessId, onPush);
+
   const agenda = useQuery({
-    enabled: !!business.data,
-    queryKey: key('agenda', day),
-    queryFn: async () =>
-      (
-        await api.get<BookingView[]>('/business/agenda', {
-          params: { from: start.toUTC().toISO(), to: start.plus({ days: 1 }).toUTC().toISO() },
-        })
-      ).data,
-    refetchInterval: 30_000,
+    enabled: !!business.data && !!range,
+    queryKey: key('agenda', range?.from, range?.to),
+    queryFn: async () => (await api.get<BookingView[]>('/business/agenda', { params: range })).data,
+    placeholderData: (prev) => prev,
   });
+
+  const reschedule = useMutation({
+    mutationFn: ({ id, start }: { id: string; start: string }) => api.post(`/bookings/${id}/reschedule`, { start }),
+    onSettled: () => qc.invalidateQueries({ queryKey: key('agenda') }),
+  });
+
+  const activePros = useMemo(() => (pros.data ?? []).filter((p) => p.active), [pros.data]);
+  const colorOf = useMemo(() => new Map(activePros.map((p, i) => [p.id, PALETTE[i % PALETTE.length]])), [activePros]);
+  const visiblePros = useMemo(
+    () => (proFilter === 'all' ? activePros : activePros.filter((p) => p.id === proFilter)),
+    [activePros, proFilter],
+  );
+
+  const events: EventInput[] = useMemo(
+    () =>
+      (agenda.data ?? [])
+        .filter((b) => showCancelled || !INACTIVE.includes(b.status))
+        .filter((b) => proFilter === 'all' || b.professional.id === proFilter)
+        .map((b) => {
+          const color = colorOf.get(b.professional.id) ?? '#57534e';
+          const inactive = INACTIVE.includes(b.status);
+          return {
+            id: b.id,
+            title: `${b.client?.fullName ?? ''} · ${b.service.name}`,
+            start: b.start,
+            end: b.end,
+            backgroundColor: inactive ? '#f5f5f4' : color,
+            borderColor: color,
+            textColor: inactive ? '#a8a29e' : '#fff',
+            classNames: inactive ? ['line-through'] : b.status === 'NO_SHOW' ? ['opacity-60'] : [],
+            // Solo se arrastran turnos activos que todavía no empezaron
+            editable: ACTIVE.includes(b.status) && new Date(b.start) > new Date(),
+            extendedProps: { booking: b },
+          };
+        }),
+    [agenda.data, showCancelled, proFilter, colorOf],
+  );
+
+  const { businessHours, slotMinTime, slotMaxTime } = useMemo(() => hoursFor(visiblePros), [visiblePros]);
 
   if (business.isLoading || pros.isLoading) return <Spinner />;
   if (business.isError) return <Alert>{errorMessage(business.error)}</Alert>;
-
-  const activePros = (pros.data ?? []).filter((p) => p.active);
-  const bookings = (agenda.data ?? []).filter((b) => showCancelled || !['CANCELLED', 'EXPIRED'].includes(b.status));
-
-  // Rango horario visible: de la primera a la última hora con horario o turnos (mínimo 8 a 20)
-  const weekday = start.weekday % 7;
-  const hours = activePros.flatMap((p) =>
-    p.schedules.filter((s) => s.weekday === weekday).flatMap((s) => [Number(s.startTime.slice(0, 2)), Number(s.endTime.slice(0, 2)) + 1]),
-  );
-  for (const b of bookings) {
-    hours.push(DateTime.fromISO(b.start, { zone }).hour, DateTime.fromISO(b.end, { zone }).hour + 1);
+  if (!activePros.length) {
+    return <EmptyState>Todavía no hay profesionales activos. Agregalos en "Profesionales y horarios".</EmptyState>;
   }
-  const firstHour = Math.max(0, Math.min(8, ...hours));
-  const lastHour = Math.min(24, Math.max(20, ...hours));
-  const totalRevenue = bookings.filter((b) => ['CONFIRMED', 'ATTENDED'].includes(b.status)).reduce((a, b) => a + b.priceCents, 0);
 
-  const shift = (days: number) => setDay(DateTime.fromISO(day).plus({ days }).toISODate()!);
+  const onDrop = (info: EventDropArg) => {
+    setDropError(null);
+    const booking = info.event.extendedProps.booking as BookingView;
+    // startStr viene con el offset de la zona del negocio (plugin de Luxon)
+    const start = new Date(info.event.startStr).toISOString();
+    reschedule.mutate(
+      { id: booking.id, start },
+      {
+        onError: (e) => {
+          info.revert();
+          setDropError(errorMessage(e));
+        },
+      },
+    );
+  };
+
+  const counted = (agenda.data ?? []).filter((b) => ['CONFIRMED', 'ATTENDED'].includes(b.status));
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">{capitalize(start.setLocale('es-AR').toFormat("cccc d 'de' LLLL"))}</h1>
-          <p className="text-sm text-stone-500">
-            {bookings.filter((b) => b.status !== 'CANCELLED').length} turnos · {formatPrice(totalRevenue)} · hora de{' '}
-            {zone.split('/').pop()?.replace(/_/g, ' ')}
+          <h1 className="text-2xl font-semibold">Agenda</h1>
+          <p className="flex items-center gap-2 text-sm text-stone-500">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${live ? 'bg-brand-500' : 'bg-stone-300'}`}
+              title={live ? 'Conectado en vivo' : 'Sin conexión en vivo'}
+            />
+            {live ? 'En vivo' : 'Conectando…'} · {counted.length} turnos ·{' '}
+            {formatPrice(counted.reduce((a, b) => a + b.priceCents, 0))} · hora de {zone.split('/').pop()?.replace(/_/g, ' ')}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="btn-secondary" onClick={() => shift(-1)} aria-label="Día anterior">
-            ←
-          </button>
-          <button className="btn-secondary" onClick={() => setDay(DateTime.now().setZone(zone).toISODate()!)}>
-            Hoy
-          </button>
-          <button className="btn-secondary" onClick={() => shift(1)} aria-label="Día siguiente">
-            →
-          </button>
-          <input type="date" className="input w-auto" value={day} onChange={(e) => e.target.value && setDay(e.target.value)} />
+        <div className="flex flex-wrap items-center gap-3">
+          <select className="input w-auto" value={proFilter} onChange={(e) => setProFilter(e.target.value)} aria-label="Profesional">
+            <option value="all">Todos los profesionales</option>
+            {activePros.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.displayName}
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-2 text-sm text-stone-600">
+            <input type="checkbox" checked={showCancelled} onChange={(e) => setShowCancelled(e.target.checked)} />
+            Cancelados
+          </label>
         </div>
       </div>
-      <label className="flex items-center gap-2 text-sm text-stone-600">
-        <input type="checkbox" checked={showCancelled} onChange={(e) => setShowCancelled(e.target.checked)} />
-        Mostrar cancelados
-      </label>
 
-      {agenda.isError && <Alert>{errorMessage(agenda.error)}</Alert>}
-      {!activePros.length ? (
-        <EmptyState>Todavía no hay profesionales activos. Agregalos en "Profesionales y horarios".</EmptyState>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-stone-200 bg-white">
-          <div className="grid min-w-[560px]" style={{ gridTemplateColumns: `56px repeat(${activePros.length}, minmax(160px, 1fr))` }}>
-            <div className="border-b border-stone-200" />
-            {activePros.map((p) => (
-              <div key={p.id} className="border-b border-l border-stone-200 px-3 py-2 text-sm font-semibold">
-                {p.displayName}
-              </div>
-            ))}
-
-            <div className="relative" style={{ height: (lastHour - firstHour) * HOUR_PX }}>
-              {Array.from({ length: lastHour - firstHour }, (_, i) => (
-                <div key={i} className="absolute right-2 -translate-y-2 text-xs text-stone-400" style={{ top: i * HOUR_PX }}>
-                  {String(firstHour + i).padStart(2, '0')}:00
-                </div>
-              ))}
-            </div>
-
-            {activePros.map((p) => (
-              <div key={p.id} className="relative border-l border-stone-200" style={{ height: (lastHour - firstHour) * HOUR_PX }}>
-                {/* Horario de atención */}
-                {p.schedules
-                  .filter((s) => s.weekday === weekday)
-                  .map((s) => {
-                    const top = toMinutes(s.startTime) - firstHour * 60;
-                    let len = toMinutes(s.endTime) - toMinutes(s.startTime);
-                    if (len <= 0) len += 1440;
-                    return (
-                      <div
-                        key={s.id}
-                        className="absolute inset-x-0 bg-brand-50/40"
-                        style={{ top: (top / 60) * HOUR_PX, height: (len / 60) * HOUR_PX }}
-                      />
-                    );
-                  })}
-                {Array.from({ length: lastHour - firstHour }, (_, i) => (
-                  <div key={i} className="absolute inset-x-0 border-t border-stone-100" style={{ top: i * HOUR_PX }} />
-                ))}
-                {bookings
-                  .filter((b) => b.professional.id === p.id)
-                  .map((b) => {
-                    const s = DateTime.fromISO(b.start, { zone });
-                    const e = DateTime.fromISO(b.end, { zone });
-                    const top = ((s.hour - firstHour) * 60 + s.minute) / 60;
-                    const height = e.diff(s, 'minutes').minutes / 60;
-                    return (
-                      <button
-                        key={b.id}
-                        onClick={() => setOpen(b)}
-                        className={`absolute inset-x-1 overflow-hidden rounded-md border-l-4 px-2 py-1 text-left text-xs shadow-sm transition hover:shadow ${BLOCK_STYLE[b.status]}`}
-                        style={{ top: top * HOUR_PX + 1, height: Math.max(height * HOUR_PX - 2, 20) }}
-                      >
-                        <span className="font-semibold">
-                          {formatTime(b.start, zone)} {b.client?.fullName}
-                        </span>
-                        <span className="block truncate opacity-80">{b.service.name}</span>
-                      </button>
-                    );
-                  })}
-              </div>
-            ))}
-          </div>
+      {proFilter === 'all' && activePros.length > 1 && (
+        <div className="flex flex-wrap gap-3 text-xs text-stone-600">
+          {activePros.map((p) => (
+            <span key={p.id} className="flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-sm" style={{ background: colorOf.get(p.id) }} />
+              {p.displayName}
+            </span>
+          ))}
         </div>
       )}
 
+      {dropError && <Alert>No se pudo mover el turno: {dropError}</Alert>}
+      {agenda.isError && <Alert>{errorMessage(agenda.error)}</Alert>}
+
+      <div className="agenda rounded-xl border border-stone-200 bg-white p-3">
+        <FullCalendar
+          plugins={[timeGridPlugin, interactionPlugin, luxon3Plugin]}
+          locale={esLocale}
+          timeZone={zone}
+          initialView={window.innerWidth < 768 ? 'timeGridDay' : 'timeGridWeek'}
+          headerToolbar={{ left: 'prev,next today', center: 'title', right: 'timeGridDay,timeGridWeek' }}
+          allDaySlot={false}
+          nowIndicator
+          height="auto"
+          slotDuration="00:15:00"
+          slotLabelInterval="01:00"
+          slotMinTime={slotMinTime}
+          slotMaxTime={slotMaxTime}
+          businessHours={businessHours}
+          eventDurationEditable={false}
+          snapDuration="00:15:00"
+          events={events}
+          eventClick={(info: EventClickArg) => setOpen(info.event.extendedProps.booking as BookingView)}
+          eventDrop={onDrop}
+          datesSet={(arg: DatesSetArg) => setRange({ from: arg.start.toISOString(), to: arg.end.toISOString() })}
+          eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+          slotLabelFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+        />
+      </div>
+      <p className="text-xs text-stone-500">Arrastrá un turno para reprogramarlo. El cliente recibe un email con el nuevo horario.</p>
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 rounded-lg bg-stone-900 px-4 py-3 text-sm text-white shadow-lg" role="status">
+          {toast}
+        </div>
+      )}
       {open && <BookingDrawer booking={open} zone={zone} onClose={() => setOpen(null)} />}
     </div>
   );
+}
+
+/** Horario de atención (sombreado) y rango visible, a partir de los horarios semanales. */
+function hoursFor(pros: ProfessionalRow[]) {
+  const ranges = pros.flatMap((p) => p.schedules);
+  const businessHours = ranges.map((r) => ({ daysOfWeek: [r.weekday], startTime: r.startTime, endTime: r.endTime }));
+  const starts = ranges.map((r) => Number(r.startTime.slice(0, 2)));
+  const ends = ranges.map((r) => (r.endTime <= r.startTime ? 24 : Math.ceil(toMinutes(r.endTime) / 60)));
+  const min = Math.max(0, Math.min(8, ...starts) - 1);
+  const max = Math.min(24, Math.max(20, ...ends) + 1);
+  return {
+    businessHours,
+    slotMinTime: `${String(min).padStart(2, '0')}:00:00`,
+    slotMaxTime: `${String(max).padStart(2, '0')}:00:00`,
+  };
 }
 
 const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));

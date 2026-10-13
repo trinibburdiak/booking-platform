@@ -12,10 +12,14 @@ import {
 } from '@turnos/contracts';
 import { AuthUser, Tenant } from '../common/auth';
 import { PrismaService } from '../prisma/prisma.service';
+import { AvailabilityCache } from '../redis/redis.module';
 
 @Injectable()
 export class BusinessService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: AvailabilityCache,
+  ) {}
 
   // ---------- negocio ----------
 
@@ -43,9 +47,11 @@ export class BusinessService {
     return this.prisma.business.findUniqueOrThrow({ where: { id: businessId } });
   }
 
-  update(businessId: string, input: UpdateBusinessInput) {
+  async update(businessId: string, input: UpdateBusinessInput) {
     if (input.timezone) this.assertTimezone(input.timezone);
-    return this.prisma.business.update({ where: { id: businessId }, data: input });
+    const updated = await this.prisma.business.update({ where: { id: businessId }, data: input });
+    await this.invalidateBusiness(businessId);
+    return updated;
   }
 
   async getPublic(slug: string): Promise<PublicBusiness> {
@@ -102,6 +108,7 @@ export class BusinessService {
   async updateProfessional(businessId: string, id: string, input: ProfessionalInput) {
     await this.findProfessional(businessId, id);
     await this.assertServicesBelong(businessId, input.serviceIds);
+    await this.cache.invalidateProfessionals([id]);
     return this.prisma.professional.update({
       where: { id },
       data: {
@@ -136,7 +143,9 @@ export class BusinessService {
 
   async updateService(businessId: string, id: string, input: ServiceInput) {
     await this.findService(businessId, id);
-    return this.prisma.service.update({ where: { id }, data: input });
+    const updated = await this.prisma.service.update({ where: { id }, data: input });
+    await this.invalidateBusiness(businessId);
+    return updated;
   }
 
   async deleteService(businessId: string, id: string) {
@@ -171,6 +180,7 @@ export class BusinessService {
       this.prisma.schedule.deleteMany({ where: { professionalId } }),
       this.prisma.schedule.createMany({ data: input.ranges.map((r) => ({ ...r, professionalId })) }),
     ]);
+    await this.cache.invalidateProfessionals([professionalId]);
     return this.getSchedule(tenant, user, professionalId);
   }
 
@@ -181,16 +191,25 @@ export class BusinessService {
 
   async createException(tenant: Tenant, user: AuthUser, professionalId: string, input: ExceptionInput) {
     await this.assertCanEditProfessional(tenant, user, professionalId);
-    return this.prisma.scheduleException.create({ data: { ...input, professionalId } });
+    const created = await this.prisma.scheduleException.create({ data: { ...input, professionalId } });
+    await this.cache.invalidateProfessionals([professionalId]);
+    return created;
   }
 
   async deleteException(tenant: Tenant, user: AuthUser, professionalId: string, exceptionId: string) {
     await this.assertCanEditProfessional(tenant, user, professionalId);
     const { count } = await this.prisma.scheduleException.deleteMany({ where: { id: exceptionId, professionalId } });
     if (!count) throw new NotFoundException('Excepción no encontrada');
+    await this.cache.invalidateProfessionals([professionalId]);
   }
 
   // ---------- helpers ----------
+
+  /** Cambios que afectan a todo el negocio (zona horaria, políticas, servicios). */
+  private async invalidateBusiness(businessId: string) {
+    const pros = await this.prisma.professional.findMany({ where: { businessId }, select: { id: true } });
+    await this.cache.invalidateProfessionals(pros.map((p) => p.id));
+  }
 
   private async findProfessional(businessId: string, id: string) {
     const pro = await this.prisma.professional.findFirst({ where: { id, businessId } });

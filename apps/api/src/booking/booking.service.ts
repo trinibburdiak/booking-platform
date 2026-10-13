@@ -5,12 +5,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Booking, Business, Prisma, Professional, Service } from '@prisma/client';
 import { canClientCancel, localDateOf } from '@turnos/availability';
 import { BookingView, CreateBookingInput, RescheduleBookingInput } from '@turnos/contracts';
 import { randomBytes } from 'crypto';
 import { AuthUser, Tenant } from '../common/auth';
+import { bookingEvent, BookingEventPayload, BookingEventType } from '../events/booking-events';
 import { PrismaService } from '../prisma/prisma.service';
+import { AvailabilityCache } from '../redis/redis.module';
 import { ACTIVE_STATUSES, AvailabilityService } from './availability.service';
 
 type BookingWithRelations = Booking & { business: Business; service: Service; professional: Professional };
@@ -33,6 +36,8 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly availability: AvailabilityService,
+    private readonly cache: AvailabilityCache,
+    private readonly events: EventEmitter2,
   ) {}
 
   /**
@@ -66,6 +71,7 @@ export class BookingService {
         },
         include: withRelations,
       });
+      await this.publish('booking.confirmed', booking);
       return this.toView(booking);
     } catch (e) {
       const overlap = isOverlapViolation(e);
@@ -125,6 +131,9 @@ export class BookingService {
         data: { professionalId, ...this.period(start, booking.service) },
         include: withRelations,
       });
+      await this.publish('booking.rescheduled', updated, {
+        previous: { professionalId: booking.professionalId, start: booking.startsAt.toISOString() },
+      });
       return this.toView(updated);
     } catch (e) {
       if (isOverlapViolation(e)) throw slotTaken();
@@ -167,7 +176,32 @@ export class BookingService {
       data: { status: attended ? 'ATTENDED' : 'NO_SHOW' },
       include: withRelations,
     });
+    await this.publish('booking.attendance', updated);
     return this.toView(updated);
+  }
+
+  /**
+   * Job horario: los turnos confirmados que terminaron hace más de `graceHours`
+   * sin asistencia marcada pasan a NO_SHOW (insumo de las métricas de ausentismo).
+   */
+  async markNoShows(now = new Date(), graceHours = 24): Promise<number> {
+    const stale = await this.prisma.booking.findMany({
+      where: { status: 'CONFIRMED', endsAt: { lt: new Date(now.getTime() - graceHours * 3_600_000) } },
+      include: withRelations,
+      take: 500,
+    });
+    let marked = 0;
+    for (const b of stale) {
+      const { count } = await this.prisma.booking.updateMany({
+        where: { id: b.id, status: 'CONFIRMED' },
+        data: { status: 'NO_SHOW' },
+      });
+      if (count) {
+        marked++;
+        await this.publish('booking.no_show', { ...b, status: 'NO_SHOW' });
+      }
+    }
+    return marked;
   }
 
   // ---------- helpers ----------
@@ -180,6 +214,7 @@ export class BookingService {
       date: localDateOf(start, business.timezone),
       professionalId,
       excludeBookingId,
+      fresh: true,
     });
     const slot = slots.find((s) => new Date(s.start).getTime() === start.getTime());
     if (!slot) throw slotTaken();
@@ -207,7 +242,37 @@ export class BookingService {
       data: { status: 'CANCELLED', cancelledAt: new Date() },
     });
     if (!count) throw new ConflictException('El turno ya no está activo');
-    return this.toView({ ...booking, status: 'CANCELLED' });
+    const cancelled = { ...booking, status: 'CANCELLED' as const };
+    await this.publish('booking.cancelled', cancelled, { cancelledBy: applyClientPolicy ? 'CLIENT' : 'BUSINESS' });
+    return this.toView(cancelled);
+  }
+
+  /**
+   * Después de cada cambio: invalida el caché de disponibilidad (de forma síncrona,
+   * para que la próxima consulta ya lo vea) y publica el evento de dominio.
+   */
+  private async publish(type: BookingEventType, b: BookingWithRelations, extra: Partial<BookingEventPayload> = {}) {
+    const tz = b.business.timezone;
+    const days = (pro: string, start: Date) => {
+      const day = localDateOf(start, tz);
+      // El día anterior también, por los tramos que cruzan la medianoche.
+      const before = localDateOf(new Date(start.getTime() - 86_400_000), tz);
+      return this.cache.invalidateDay(pro, day, before);
+    };
+    await days(b.professionalId, b.startsAt);
+    if (extra.previous) await days(extra.previous.professionalId, new Date(extra.previous.start));
+
+    this.events.emit(
+      type,
+      bookingEvent(type, b.businessId, {
+        bookingId: b.id,
+        professionalId: b.professionalId,
+        clientId: b.clientId,
+        start: b.startsAt.toISOString(),
+        end: b.endsAt.toISOString(),
+        ...extra,
+      }),
+    );
   }
 
   private assertActive(booking: Booking) {

@@ -204,3 +204,32 @@ model Booking {
   @@index([clientId, startsAt])
   @@map("bookings")
 }
+
+// ---------- notifications ----------
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_RESCHEDULED
+  BOOKING_CANCELLED
+  BOOKING_REMINDER
+}
+
+enum NotificationStatus {
+  SENT
+  FAILED
+}
+
+/// Registro de cada aviso enviado (o que falló), para auditoría y para no duplicar.
+model Notification {
+  id        String             @id @default(uuid()) @db.Uuid
+  userId    String             @map("user_id") @db.Uuid
+  bookingId String             @map("booking_id") @db.Uuid
+  channel   String             @default("EMAIL")
+  type      NotificationType
+  status    NotificationStatus
+  error     String?
+  sentAt    DateTime           @default(now()) @map("sent_at") @db.Timestamptz(3)
+
+  @@index([bookingId])
+  @@map("notifications")
+}
