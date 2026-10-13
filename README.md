@@ -12,8 +12,28 @@ Plataforma multi-tenant de turnos online: cada negocio (peluquería, consultorio
 | 2. Monolito modular | NestJS (auth, business, booking), disponibilidad, reserva con exclusion constraint, cancelación y reprogramación. Front: página pública, wizard de reserva, mis turnos, panel y configuración | ✅ |
 | 3. Agenda y notificaciones | Agenda con FullCalendar (día/semana, drag & drop), tiempo real con Socket.IO, emails de confirmación/reprogramación/cancelación, recordatorio 24 h antes y `mark-no-shows` con BullMQ, caché de disponibilidad en Redis | ✅ |
 | 4. Eventos | Outbox en Postgres + relay a Kafka (`booking.events`, clave = bookingId); notificaciones y agenda en vivo consumen de Kafka con idempotencia | ✅ |
-| 5. Microservicios | Separar servicios, gateway | pendiente |
+| 5. Microservicios | api-gateway + auth, business, booking y notifications, cada uno con su base; booking con réplica del catálogo y de clientes por eventos | ✅ |
 | 6. Extras | Seña con Mercado Pago sandbox, drag & drop, Playwright | pendiente |
+
+## Arquitectura
+
+```
+                 ┌───────────── web (React, :5180) ─────────────┐
+                 │                                              │
+                 ▼                                              │ WebSocket
+          api-gateway :3000  ── JWT, membresías, rate limiting ─┤
+     ┌──────────┬──────────┼───────────────┬──────────────┐     │
+     ▼          ▼          ▼               ▼              ▼     │
+  auth :3001  business :3002  booking :3003  notifications :3004 ◄┘
+     │          │              │   ▲  réplica     │  emails, recordatorios
+     │          │              │   │  catálogo    │  (BullMQ), agenda en vivo
+     ▼          ▼              ▼   │  y clientes  ▼
+  turnos_auth  turnos_business  turnos_booking   turnos_notifications
+     │          │              │                  ▲
+     └── auth.events ── business.events ── booking.events ──┘   Kafka (outbox en cada servicio)
+```
+
+Cada servicio es dueño de su base y publica sus cambios con outbox. El front solo habla con el gateway. Detalle en [ADR 0004](docs/adr/0004-microservicios.md).
 
 ## Cómo levantarlo
 
@@ -22,22 +42,22 @@ Requisitos: Node 22, pnpm 10, Docker.
 ```bash
 pnpm install
 pnpm db:up          # Postgres (5544), Redis (6380), Mailpit (8026), Kafka (9094), Kafka UI (8090)
-cp apps/api/.env.example apps/api/.env
-pnpm db:migrate
-pnpm db:seed        # Barbería Demo con turnos cargados
-pnpm dev:api        # http://localhost:3000/api/v1 · Swagger en /docs
-pnpm dev:web        # http://localhost:5180
+pnpm db:migrate     # migra la base de cada servicio
+pnpm dev            # gateway (3000), auth (3001), business (3002), booking (3003), notifications (3004) y web (5180)
+pnpm db:seed        # en otra terminal, con todo corriendo: carga la Barbería Demo pasando por el gateway
 ```
 
-Los emails no salen a internet: se ven en Mailpit, http://localhost:8026. Los eventos se ven en Kafka UI, http://localhost:8090.
+Los `.env` de cada servicio salen de su `.env.example` (`apps/*/.env.example`).
 
 Usuarios de prueba (contraseña `demo1234`): `cliente@turnos.dev` (cliente) y `demo@turnos.dev` (dueña de la Barbería Demo).
+
+Los emails no salen a internet: se ven en Mailpit, http://localhost:8026. Los eventos se ven en Kafka UI, http://localhost:8090. Cada servicio tiene Swagger en `/docs` de su puerto.
 
 ## Tests
 
 ```bash
 pnpm --filter @turnos/availability test   # unitarios de la lógica de disponibilidad
-pnpm --filter @turnos/api test            # integración contra Postgres, Redis y Kafka reales (Testcontainers, necesita Docker)
+pnpm test                                 # todo: cada servicio levanta su Postgres, Redis y Kafka con Testcontainers (necesita Docker)
 ```
 
 Lo que cubren:
@@ -56,13 +76,20 @@ Lo que cubren:
 
 ```
 apps/
-  api/            NestJS + Prisma (monolito modular: auth, business, booking)
-  web/            React + Vite + TanStack Query + React Hook Form + Tailwind
+  api-gateway/            entrada única: JWT, tenant, rate limiting, proxy HTTP y WebSocket
+  auth-service/           usuarios, sesiones, membresías
+  business-service/       negocios, profesionales, servicios, horarios, excepciones
+  booking-service/        disponibilidad, turnos (exclusion constraint), réplica del catálogo, mark-no-shows
+  notifications-service/  emails, recordatorios con BullMQ, WebSocket de la agenda
+  web/                    React + Vite + TanStack Query + FullCalendar + Tailwind
 libs/
-  availability/   lógica pura de disponibilidad y política de cancelación
-  contracts/      esquemas Zod y tipos compartidos entre front y back
-infra/            docker-compose
-docs/adr/         decisiones de arquitectura
+  availability/           lógica pura de disponibilidad y política de cancelación
+  contracts/              esquemas Zod, DTOs y catálogo de eventos
+  common/                 guards de headers del gateway, token interno, cliente HTTP interno, bootstrap
+  kafka/                  cliente de Kafka, outbox relay y consumidor idempotente
+  testing/                contenedores y helpers para los tests de integración
+infra/                    docker-compose y seed
+docs/adr/                 decisiones de arquitectura
 ```
 
 ## Decisiones clave
@@ -70,11 +97,12 @@ docs/adr/         decisiones de arquitectura
 - [ADR 0001 — Exclusion constraint en lugar de locks en código](docs/adr/0001-exclusion-constraint.md)
 - [ADR 0002 — Calcular la disponibilidad en vez de guardarla](docs/adr/0002-disponibilidad-calculada.md)
 - [ADR 0003 — Eventos con outbox y Kafka](docs/adr/0003-outbox-y-kafka.md)
+- [ADR 0004 — Separar en microservicios](docs/adr/0004-microservicios.md)
 
 Detalles:
 
 - `bookings.period` es una columna generada `tstzrange(starts_at, blocked_until)`; `blocked_until` incluye el buffer del servicio.
-- El `businessId` de las rutas de gestión llega en el header `X-Business-Id`, y solo se acepta si el usuario tiene membresía en ese negocio. Nunca se toma del body.
+- El `businessId` de las rutas de gestión llega en el header `X-Business-Id`: el gateway lo acepta solo si el usuario tiene membresía en ese negocio, y los servicios confían en el resultado solo si viene con el token interno. Nunca se toma del body.
 - Access token JWT de 15 min en memoria; refresh token rotativo en cookie `httpOnly`, con detección de reuso.
 - La `Idempotency-Key` se genera al abrir el paso de confirmación: un doble click no reserva dos veces.
 - Las fechas siempre se muestran en la zona horaria del negocio, no en la del navegador.
@@ -84,7 +112,7 @@ Detalles:
 
 ## API
 
-Todo bajo `/api/v1`, documentado en Swagger (`/docs`).
+Todo bajo `/api/v1` en el gateway (puerto 3000). Cada servicio documenta su parte en Swagger (`/docs` de su puerto).
 
 | Método | Ruta | Acceso |
 | --- | --- | --- |

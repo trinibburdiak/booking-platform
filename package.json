@@ -5,17 +5,19 @@
   "scripts": {
     "build:libs": "pnpm --filter \"./libs/**\" build",
     "build": "pnpm build:libs && pnpm --filter \"./apps/**\" build",
-    "dev:api": "pnpm --filter @turnos/api dev",
+    "dev": "concurrently -k -n gateway,auth,business,booking,notif,web -c cyan,magenta,yellow,green,blue,gray \"pnpm --filter @turnos/api-gateway dev\" \"pnpm --filter @turnos/auth-service dev\" \"pnpm --filter @turnos/business-service dev\" \"pnpm --filter @turnos/booking-service dev\" \"pnpm --filter @turnos/notifications-service dev\" \"pnpm --filter @turnos/web dev\"",
+    "dev:services": "concurrently -k -n gateway,auth,business,booking,notif -c cyan,magenta,yellow,green,blue \"pnpm --filter @turnos/api-gateway dev\" \"pnpm --filter @turnos/auth-service dev\" \"pnpm --filter @turnos/business-service dev\" \"pnpm --filter @turnos/booking-service dev\" \"pnpm --filter @turnos/notifications-service dev\"",
     "dev:web": "pnpm --filter @turnos/web dev",
     "db:up": "docker compose -f infra/docker-compose.yml up -d",
     "db:down": "docker compose -f infra/docker-compose.yml down",
-    "db:migrate": "pnpm --filter @turnos/api db:migrate",
-    "db:seed": "pnpm --filter @turnos/api db:seed",
+    "db:migrate": "pnpm --filter \"./apps/*-service\" db:migrate",
+    "db:seed": "node infra/seed/seed.mjs",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "postinstall": "pnpm build:libs"
   },
   "devDependencies": {
+    "concurrently": "9.1.2",
     "esbuild": "0.21.5"
   }
 }

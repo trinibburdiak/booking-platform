@@ -1,17 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {
-      "name": "api",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev:api"],
-      "port": 3000
-    },
-    {
-      "name": "web",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev:web"],
-      "port": 5180
-    }
+    { "name": "services", "runtimeExecutable": "pnpm", "runtimeArgs": ["-C", "C:/Users/User/turnos", "dev:services"], "port": 3000 },
+    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["-C", "C:/Users/User/turnos", "dev:web"], "port": 5180 }
   ]
 }

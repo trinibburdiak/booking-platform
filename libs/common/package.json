@@ -1,0 +1,25 @@
+{
+  "name": "@turnos/common",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.0.11",
+    "@nestjs/core": "11.0.11",
+    "@nestjs/swagger": "11.0.6",
+    "@turnos/contracts": "workspace:*",
+    "helmet": "8.0.0",
+    "reflect-metadata": "0.2.2",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.0",
+    "@types/node": "22.13.10",
+    "typescript": "5.6.3"
+  }
+}

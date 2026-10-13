@@ -19,9 +19,6 @@ jobs:
       - run: pnpm typecheck
       - name: Unit tests (disponibilidad)
         run: pnpm --filter @turnos/availability test
-      - name: Integration tests (Postgres real con Testcontainers)
-        run: pnpm --filter @turnos/api test
-        env:
-          JWT_SECRET: ci-secret
-      - run: pnpm --filter @turnos/api build
-      - run: pnpm --filter @turnos/web build
+      - name: Integration tests por servicio (Postgres, Redis y Kafka con Testcontainers)
+        run: pnpm --filter "./apps/*" test
+      - run: pnpm build

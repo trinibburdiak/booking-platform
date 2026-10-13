@@ -33,6 +33,13 @@ export function CreateBusinessWizard() {
     setBusy(true);
     try {
       const { data: created } = await api.post<{ id: string }>('/businesses', parsed.data);
+      // La membresía OWNER la crea auth-service al recibir el evento business.created:
+      // se espera a que aparezca antes de seguir (suele tardar milisegundos).
+      for (let i = 0; i < 40; i++) {
+        const me = await reloadUser();
+        if (me?.memberships.some((m) => m.businessId === created.id)) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
       selectBusiness(created.id);
       const headers = { 'X-Business-Id': created.id };
       const { data: svc } = await api.post<{ id: string }>(
