@@ -1,0 +1,18 @@
+{
+  "name": "turnos",
+  "private": true,
+  "packageManager": "pnpm@10.13.1",
+  "scripts": {
+    "build:libs": "pnpm --filter \"./libs/**\" build",
+    "build": "pnpm build:libs && pnpm --filter \"./apps/**\" build",
+    "dev:api": "pnpm --filter @turnos/api dev",
+    "dev:web": "pnpm --filter @turnos/web dev",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "pnpm --filter @turnos/api db:migrate",
+    "db:seed": "pnpm --filter @turnos/api db:seed",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "postinstall": "pnpm build:libs"
+  }
+}
