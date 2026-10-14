@@ -60,24 +60,28 @@ export function ServicesPage() {
   );
 }
 
-type FormValues = Omit<ServiceInput, 'priceCents'> & { price: number };
+type FormValues = Omit<ServiceInput, 'priceCents' | 'depositCents'> & { price: number; deposit: number };
 
 function ServiceForm({ service, onClose }: { service: ServiceRow | null; onClose: () => void }) {
   const qc = useQueryClient();
   const key = useBusinessKey();
   const form = useForm<FormValues>({
-    resolver: zodResolver(serviceSchema.omit({ priceCents: true }).extend({ price: serviceSchema.shape.priceCents })),
+    resolver: zodResolver(
+      serviceSchema
+        .omit({ priceCents: true, depositCents: true })
+        .extend({ price: serviceSchema.shape.priceCents, deposit: serviceSchema.shape.priceCents }),
+    ),
     defaultValues: service
-      ? { ...service, price: service.priceCents / 100 }
-      : { name: '', durationMin: 30, bufferMin: 0, price: 0, depositCents: 0, active: true },
+      ? { ...service, price: service.priceCents / 100, deposit: service.depositCents / 100 }
+      : { name: '', durationMin: 30, bufferMin: 0, price: 0, deposit: 0, active: true },
   });
   const done = () => {
     qc.invalidateQueries({ queryKey: key() });
     onClose();
   };
   const save = useMutation({
-    mutationFn: ({ price, ...v }: FormValues) => {
-      const body: ServiceInput = { ...v, priceCents: Math.round(price * 100) };
+    mutationFn: ({ price, deposit, ...v }: FormValues) => {
+      const body: ServiceInput = { ...v, priceCents: Math.round(price * 100), depositCents: Math.round(deposit * 100) };
       return service ? api.put(`/business/services/${service.id}`, body) : api.post('/business/services', body);
     },
     onSuccess: done,
@@ -104,7 +108,13 @@ function ServiceForm({ service, onClose }: { service: ServiceRow | null; onClose
             <input className="input" type="number" step="1" {...form.register('price', num)} />
           </Field>
         </div>
-        <p className="text-xs text-stone-500">El buffer es el tiempo libre que queda después del turno (limpieza, preparación).</p>
+        <Field label="Seña ($)" error={err.deposit?.message}>
+          <input className="input" type="number" step="1" {...form.register('deposit', num)} />
+        </Field>
+        <p className="text-xs text-stone-500">
+          El buffer es el tiempo libre que queda después del turno (limpieza, preparación). La seña se cobra solo si el
+          negocio la exige (Configuración).
+        </p>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" {...form.register('active')} /> Activo (visible para reservar)
         </label>

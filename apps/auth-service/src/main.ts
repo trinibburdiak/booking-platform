@@ -7,5 +7,7 @@ import { AppModule } from './app.module';
 void bootstrapService(AppModule, {
   name: 'auth-service',
   port: Number(process.env.HTTP_PORT ?? 3001),
-  setup: (app) => app.use(cookieParser()),
+  setup: (app) => {
+    app.use(cookieParser());
+  },
 });

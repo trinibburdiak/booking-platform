@@ -57,6 +57,9 @@ export function MyBookingsPage() {
                 </Link>{' '}
                 · {formatPrice(b.priceCents)}
               </p>
+              {b.status === 'PENDING' && (
+                <p className="mt-1 text-xs font-medium text-amber-700">Pendiente: pagá la seña para confirmarlo.</p>
+              )}
               {!b.canClientCancel && (
                 <p className="mt-1 text-xs text-amber-700">
                   Faltan menos de {b.business.cancellationHours} h: para cambios, comunicate con el negocio.
@@ -64,6 +67,11 @@ export function MyBookingsPage() {
               )}
             </div>
             <div className="flex shrink-0 gap-2">
+              {b.status === 'PENDING' && (
+                <Link className="btn-primary" to={`/reservas/${b.id}`}>
+                  Pagar seña
+                </Link>
+              )}
               <button className="btn-secondary" disabled={!b.canClientCancel} onClick={() => setRescheduling(b)}>
                 Reprogramar
               </button>

@@ -1,5 +1,6 @@
 import { HttpException, InternalServerErrorException } from '@nestjs/common';
 import { HEADERS, internalToken } from './gateway-auth';
+import { currentRequestId } from './logging';
 
 /**
  * Llamada HTTP entre servicios (endpoints /internal/*, que el gateway no expone).
@@ -7,7 +8,11 @@ import { HEADERS, internalToken } from './gateway-auth';
  */
 export async function internalGet<T>(baseUrl: string, path: string, init: { timeoutMs?: number } = {}): Promise<T> {
   const res = await fetch(`${baseUrl}${path}`, {
-    headers: { [HEADERS.internalToken]: internalToken(), accept: 'application/json' },
+    headers: {
+      [HEADERS.internalToken]: internalToken(),
+      accept: 'application/json',
+      ...(currentRequestId() && { [HEADERS.requestId]: currentRequestId()! }),
+    },
     signal: AbortSignal.timeout(init.timeoutMs ?? 5_000),
   }).catch((e: Error) => {
     throw new InternalServerErrorException(`No se pudo llamar a ${baseUrl}${path}: ${e.message}`);
@@ -24,4 +29,5 @@ export const SERVICE_URLS = {
   business: () => process.env.BUSINESS_URL ?? 'http://localhost:3002',
   booking: () => process.env.BOOKING_URL ?? 'http://localhost:3003',
   notifications: () => process.env.NOTIFICATIONS_URL ?? 'http://localhost:3004',
+  payments: () => process.env.PAYMENTS_URL ?? 'http://localhost:3005',
 };

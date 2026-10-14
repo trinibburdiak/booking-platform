@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { AuthUser, CurrentTenant, CurrentUser, Tenant, TenantGuard, UserGuard, ZodPipe } from '@turnos/common';
 import { AvailabilityService } from './availability.service';
 import { BookingService } from './booking.service';
+import { MetricsService } from './metrics.service';
 
 const uuid = new ParseUUIDPipe();
 
@@ -59,6 +60,13 @@ export class BookingController {
     return this.bookings.myBookings(user);
   }
 
+  @Get('bookings/:id')
+  @ApiBearerAuth()
+  @UseGuards(UserGuard)
+  getOne(@CurrentUser() user: AuthUser, @Param('id', uuid) id: string) {
+    return this.bookings.getOne(user, id);
+  }
+
   /** Va antes que `bookings/:id/cancel` para que "cancel" no se lea como id. */
   @Post('bookings/cancel')
   @HttpCode(200)
@@ -93,11 +101,20 @@ export class BookingController {
 @Controller('business')
 @UseGuards(TenantGuard)
 export class AgendaController {
-  constructor(private readonly bookings: BookingService) {}
+  constructor(
+    private readonly bookings: BookingService,
+    private readonly metricsService: MetricsService,
+  ) {}
 
   @Get('agenda')
   agenda(@CurrentTenant() t: Tenant, @Query(new ZodPipe(agendaQuerySchema)) q: z.infer<typeof agendaQuerySchema>) {
     return this.bookings.agenda(t, new Date(q.from), new Date(q.to), q.professionalId);
+  }
+
+  /** Métricas de ausentismo del negocio en un rango. */
+  @Get('metrics')
+  metrics(@CurrentTenant() t: Tenant, @Query(new ZodPipe(agendaQuerySchema.omit({ professionalId: true }))) q: { from: string; to: string }) {
+    return this.metricsService.get(t, new Date(q.from), new Date(q.to));
   }
 
   @Patch('bookings/:id/attendance')

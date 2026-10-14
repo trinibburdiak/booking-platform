@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import type { EventEnvelope } from '@turnos/contracts';
+import { currentRequestId } from '@turnos/common';
 import { randomUUID } from 'crypto';
 import { KafkaService } from './kafka.service';
 
@@ -20,7 +21,7 @@ export interface OutboxPrismaTx {
 export const OUTBOX_PRISMA = Symbol('OUTBOX_PRISMA');
 
 export function envelope<T extends string, P>(eventType: T, businessId: string | null, payload: P): EventEnvelope<T, P> {
-  return { eventId: randomUUID(), eventType, occurredAt: new Date().toISOString(), businessId, payload };
+  return { eventId: randomUUID(), eventType, occurredAt: new Date().toISOString(), correlationId: currentRequestId(), businessId, payload };
 }
 
 /** Datos para `tx.outboxEvent.create({ data })`, dentro de la transacción del cambio. */

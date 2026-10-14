@@ -33,8 +33,8 @@ export function BusinessSettings() {
 
   useEffect(() => {
     if (business.data) {
-      const { name, timezone, address, cancellationHours, bookingWindowDays, minNoticeMinutes } = business.data;
-      form.reset({ name, timezone, address, cancellationHours, bookingWindowDays, minNoticeMinutes });
+      const { name, timezone, address, cancellationHours, bookingWindowDays, minNoticeMinutes, requiresDeposit } = business.data;
+      form.reset({ name, timezone, address, cancellationHours, bookingWindowDays, minNoticeMinutes, requiresDeposit });
     }
   }, [business.data, form]);
 
@@ -81,6 +81,16 @@ export function BusinessSettings() {
               <input className="input" type="number" {...form.register('minNoticeMinutes', num)} />
             </Field>
           </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" {...form.register('requiresDeposit')} />
+            <span>
+              Pedir seña para confirmar el turno
+              <span className="block text-xs text-stone-500">
+                Los servicios con seña quedan pendientes hasta que el cliente paga; si no paga en 15 minutos, el horario se
+                libera.
+              </span>
+            </span>
+          </label>
         </fieldset>
         {isOwner ? (
           <button className="btn-primary" disabled={save.isPending}>

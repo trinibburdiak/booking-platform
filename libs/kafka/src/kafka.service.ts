@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { runWithRequestId } from '@turnos/common';
 import { Consumer, EachMessagePayload, Kafka, logLevel, Partitioners, Producer } from 'kafkajs';
 
 export const KAFKA_OPTIONS = Symbol('KAFKA_OPTIONS');
@@ -30,17 +31,37 @@ export class KafkaService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Reintenta con espera creciente. Al arrancar todo junto (o con Kafka recién
+   * levantado), el broker puede tardar en tener listos coordinador y particiones.
+   */
+  private async retry<T>(what: string, fn: () => Promise<T>, attempts = 12): Promise<T> {
+    for (let i = 1; ; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (i >= attempts) throw e;
+        this.logger.warn(`${what}: ${(e as Error).message} (reintento ${i}/${attempts - 1})`);
+        await new Promise((r) => setTimeout(r, Math.min(500 * i, 5_000)));
+      }
+    }
+  }
+
   /** Crea los tópicos que faltan (los consumidores también los aseguran) y conecta el productor. */
   ready(): Promise<void> {
-    this.readyPromise ??= (async () => {
+    this.readyPromise ??= this.retry('Conectando el productor', async () => {
       await this.ensureTopics(this.options.produces);
-      this.producer = this.kafka.producer({
+      const producer = this.kafka.producer({
         idempotent: true,
         maxInFlightRequests: 1,
         createPartitioner: Partitioners.DefaultPartitioner,
       });
-      await this.producer.connect();
-    })();
+      await producer.connect();
+      this.producer = producer;
+    }).catch((e) => {
+      this.readyPromise = undefined; // que el próximo intento vuelva a probar
+      throw e;
+    });
     return this.readyPromise;
   }
 
@@ -69,13 +90,32 @@ export class KafkaService implements OnModuleDestroy {
     fromBeginning: boolean;
     handler: (payload: EachMessagePayload) => Promise<void>;
   }) {
-    await this.ensureTopics(opts.topics);
-    const consumer = this.kafka.consumer({ groupId: opts.groupId });
+    const { consumer, joined } = await this.retry(`Iniciando el consumidor ${opts.groupId}`, async () => {
+      await this.ensureTopics(opts.topics);
+      const c = this.kafka.consumer({ groupId: opts.groupId });
+      try {
+        await c.connect();
+        await c.subscribe({ topics: opts.topics, fromBeginning: opts.fromBeginning });
+      } catch (e) {
+        await c.disconnect().catch(() => undefined);
+        throw e;
+      }
+      const j = new Promise<void>((resolve) => c.on(c.events.GROUP_JOIN, () => resolve()));
+      return { consumer: c, joined: j };
+    });
     this.consumers.push(consumer);
-    await consumer.connect();
-    await consumer.subscribe({ topics: opts.topics, fromBeginning: opts.fromBeginning });
-    const joined = new Promise<void>((resolve) => consumer.on(consumer.events.GROUP_JOIN, () => resolve()));
-    await consumer.run({ eachMessage: opts.handler });
+    // Cada mensaje se procesa con el correlationId del evento: los logs quedan unidos a la request original
+    await consumer.run({
+      eachMessage: (payload) => {
+        let correlationId: string | undefined;
+        try {
+          correlationId = JSON.parse(payload.message.value?.toString() ?? '{}').correlationId;
+        } catch {
+          /* mensaje que no es JSON: se procesa igual */
+        }
+        return runWithRequestId(correlationId, () => opts.handler(payload));
+      },
+    });
     await Promise.race([joined, new Promise((r) => setTimeout(r, 30_000))]);
     this.logger.log(`Consumidor ${opts.groupId} escuchando ${opts.topics.join(', ')}`);
   }

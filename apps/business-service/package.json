@@ -53,6 +53,7 @@
     "setupFiles": [
       "dotenv/config"
     ],
-    "testTimeout": 60000
+    "testTimeout": 60000,
+    "forceExit": true
   }
 }

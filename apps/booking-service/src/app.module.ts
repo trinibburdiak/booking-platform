@@ -7,6 +7,9 @@ import { AvailabilityService } from './availability.service';
 import { BookingJobsService } from './booking-jobs.service';
 import { AgendaController, BookingController, InternalBookingsController, PublicAvailabilityController } from './booking.controller';
 import { BookingService } from './booking.service';
+import { ExpirationQueue } from './expiration.queue';
+import { MetricsService } from './metrics.service';
+import { PaymentsConsumer } from './payments.consumer';
 import { PrismaModule, PrismaService } from './prisma.service';
 import { RedisModule } from './redis.module';
 import { ReplicaConsumer } from './replica.consumer';
@@ -28,7 +31,10 @@ import { ReplicaConsumer } from './replica.consumer';
     AvailabilityService,
     BookingService,
     BookingJobsService,
+    ExpirationQueue,
+    MetricsService,
     ReplicaConsumer,
+    PaymentsConsumer,
     { provide: APP_GUARD, useClass: InternalTokenGuard },
   ],
 })

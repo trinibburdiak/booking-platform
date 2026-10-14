@@ -14,6 +14,10 @@
     "@nestjs/swagger": "11.0.6",
     "@turnos/contracts": "workspace:*",
     "helmet": "8.0.0",
+    "nestjs-pino": "4.1.0",
+    "pino": "9.5.0",
+    "pino-http": "10.3.0",
+    "pino-pretty": "13.0.0",
     "reflect-metadata": "0.2.2",
     "zod": "3.23.8"
   },

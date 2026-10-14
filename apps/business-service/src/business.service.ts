@@ -31,6 +31,7 @@ const businessState = (b: Business): BusinessState => ({
   cancellationHours: b.cancellationHours,
   bookingWindowDays: b.bookingWindowDays,
   minNoticeMinutes: b.minNoticeMinutes,
+  requiresDeposit: b.requiresDeposit,
 });
 
 const serviceState = (s: Service): ServiceState => ({
@@ -107,11 +108,13 @@ export class BusinessService {
       timezone: business.timezone,
       address: business.address,
       cancellationHours: business.cancellationHours,
+      requiresDeposit: business.requiresDeposit,
       services: business.services.map((s) => ({
         id: s.id,
         name: s.name,
         durationMin: s.durationMin,
         priceCents: s.priceCents,
+        depositCents: business.requiresDeposit ? s.depositCents : 0,
         professionalIds: s.professionals.map((p) => p.professionalId).filter((id) => activePros.has(id)),
       })),
       professionals: business.professionals.map((p) => ({ id: p.id, displayName: p.displayName })),

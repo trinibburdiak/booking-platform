@@ -3,6 +3,7 @@ import { useAuth } from '../auth/useAuth';
 
 const links = [
   { to: '/panel', label: 'Agenda', end: true },
+  { to: '/panel/ausentismo', label: 'Ausentismo' },
   { to: '/panel/servicios', label: 'Servicios' },
   { to: '/panel/profesionales', label: 'Profesionales y horarios' },
   { to: '/panel/configuracion', label: 'Configuración' },

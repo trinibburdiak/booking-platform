@@ -13,7 +13,7 @@ Plataforma multi-tenant de turnos online: cada negocio (peluquería, consultorio
 | 3. Agenda y notificaciones | Agenda con FullCalendar (día/semana, drag & drop), tiempo real con Socket.IO, emails de confirmación/reprogramación/cancelación, recordatorio 24 h antes y `mark-no-shows` con BullMQ, caché de disponibilidad en Redis | ✅ |
 | 4. Eventos | Outbox en Postgres + relay a Kafka (`booking.events`, clave = bookingId); notificaciones y agenda en vivo consumen de Kafka con idempotencia | ✅ |
 | 5. Microservicios | api-gateway + auth, business, booking y notifications, cada uno con su base; booking con réplica del catálogo y de clientes por eventos | ✅ |
-| 6. Extras | Seña con Mercado Pago sandbox, drag & drop, Playwright | pendiente |
+| 6. Extras y pulido | Seña con Mercado Pago (o checkout simulado) y vencimiento de reservas sin pagar; métricas de ausentismo; logs JSON con un id por request que sigue por HTTP y Kafka; Bull Board; Playwright | ✅ |
 
 ## Arquitectura
 
@@ -24,13 +24,13 @@ Plataforma multi-tenant de turnos online: cada negocio (peluquería, consultorio
           api-gateway :3000  ── JWT, membresías, rate limiting ─┤
      ┌──────────┬──────────┼───────────────┬──────────────┐     │
      ▼          ▼          ▼               ▼              ▼     │
-  auth :3001  business :3002  booking :3003  notifications :3004 ◄┘
+  auth :3001  business :3002  booking :3003  notifications :3004 ◄┘   payments :3005
      │          │              │   ▲  réplica     │  emails, recordatorios
      │          │              │   │  catálogo    │  (BullMQ), agenda en vivo
      ▼          ▼              ▼   │  y clientes  ▼
   turnos_auth  turnos_business  turnos_booking   turnos_notifications
      │          │              │                  ▲
-     └── auth.events ── business.events ── booking.events ──┘   Kafka (outbox en cada servicio)
+     └── auth.events ── business.events ── booking.events ── payments.events   Kafka (outbox en cada servicio)
 ```
 
 Cada servicio es dueño de su base y publica sus cambios con outbox. El front solo habla con el gateway. Detalle en [ADR 0004](docs/adr/0004-microservicios.md).
@@ -43,7 +43,7 @@ Requisitos: Node 22, pnpm 10, Docker.
 pnpm install
 pnpm db:up          # Postgres (5544), Redis (6380), Mailpit (8026), Kafka (9094), Kafka UI (8090)
 pnpm db:migrate     # migra la base de cada servicio
-pnpm dev            # gateway (3000), auth (3001), business (3002), booking (3003), notifications (3004) y web (5180)
+pnpm dev            # gateway (3000), auth (3001), business (3002), booking (3003), notifications (3004), payments (3005) y web (5180)
 pnpm db:seed        # en otra terminal, con todo corriendo: carga la Barbería Demo pasando por el gateway
 ```
 
@@ -51,13 +51,28 @@ Los `.env` de cada servicio salen de su `.env.example` (`apps/*/.env.example`).
 
 Usuarios de prueba (contraseña `demo1234`): `cliente@turnos.dev` (cliente) y `demo@turnos.dev` (dueña de la Barbería Demo).
 
-Los emails no salen a internet: se ven en Mailpit, http://localhost:8026. Los eventos se ven en Kafka UI, http://localhost:8090. Cada servicio tiene Swagger en `/docs` de su puerto.
+Los emails no salen a internet: se ven en Mailpit, http://localhost:8026. Los eventos se ven en Kafka UI, http://localhost:8090. Cada servicio tiene Swagger en `/docs` de su puerto. Los jobs de BullMQ se ven en Bull Board: http://localhost:3003/admin/queues (vencimientos y ausentes) y http://localhost:3004/admin/queues (recordatorios).
+
+### Seña con Mercado Pago
+
+Se activa en el panel: Configuración → "Pedir seña" y un monto de seña en el servicio. Sin credenciales, el link de pago lleva a un **checkout simulado** (aprobar o rechazar). Para usar el sandbox real de Mercado Pago, en `apps/payments-service/.env`:
+
+```
+MP_ACCESS_TOKEN=TEST-...          # access token de prueba de tu cuenta de desarrollador de MP
+MP_WEBHOOK_SECRET=...             # "clave secreta" de la sección Webhooks
+MP_NOTIFICATION_URL=https://<túnel>/api/v1/webhooks/mercadopago   # URL pública al gateway (ej. ngrok)
+```
+
+### Logs
+
+Cada servicio escribe logs JSON (Pino). El gateway asigna un `x-request-id` que se propaga a las llamadas internas y se guarda como `correlationId` en los eventos; los consumidores de Kafka lo restauran. Buscar ese id en los logs muestra una reserva de punta a punta, del gateway al email. `LOG_PRETTY=true` en el `.env` los hace legibles en desarrollo.
 
 ## Tests
 
 ```bash
 pnpm --filter @turnos/availability test   # unitarios de la lógica de disponibilidad
 pnpm test                                 # todo: cada servicio levanta su Postgres, Redis y Kafka con Testcontainers (necesita Docker)
+pnpm --filter @turnos/e2e e2e             # Playwright contra el sistema corriendo (pnpm dev + pnpm db:seed); usa el Chrome instalado
 ```
 
 Lo que cubren:
@@ -70,6 +85,9 @@ Lo que cubren:
 - **Notificaciones:** email de confirmación con link de cancelación; recordatorio programado 24 h antes con `jobId = bookingId`, que se borra al cancelar y se reemplaza al reprogramar; el worker no manda recordatorios de turnos movidos.
 - **Tiempo real:** el panel recibe el turno nuevo por WebSocket; quien no es del negocio no puede suscribirse.
 - **Outbox y Kafka:** el turno y su evento se guardan juntos; una reserva rechazada no deja eventos; los eventos de un turno quedan en orden; un evento entregado dos veces manda un solo email.
+- **Seña:** turno PENDING que ocupa el horario; pago aprobado → confirmado; rechazado o sin pagar a tiempo → vencido y horario libre; pago tardío con el horario ya tomado → devolución.
+- **Ausentismo:** tasas por profesional y día de la semana, sin contar cancelados.
+- **De punta a punta (Playwright):** el cliente reserva y la dueña lo ve aparecer en vivo; reserva con seña pagada y con pago rechazado.
 - **Caché y jobs:** la disponibilidad se cachea en Redis y se invalida al cambiar el horario; `mark-no-shows` solo toca confirmados vencidos hace más de 24 h.
 
 ## Estructura
@@ -81,6 +99,8 @@ apps/
   business-service/       negocios, profesionales, servicios, horarios, excepciones
   booking-service/        disponibilidad, turnos (exclusion constraint), réplica del catálogo, mark-no-shows
   notifications-service/  emails, recordatorios con BullMQ, WebSocket de la agenda
+  payments-service/       señas: Mercado Pago o checkout simulado, webhook firmado, devoluciones
+  e2e/                    pruebas de punta a punta con Playwright
   web/                    React + Vite + TanStack Query + FullCalendar + Tailwind
 libs/
   availability/           lógica pura de disponibilidad y política de cancelación
@@ -98,6 +118,7 @@ docs/adr/                 decisiones de arquitectura
 - [ADR 0002 — Calcular la disponibilidad en vez de guardarla](docs/adr/0002-disponibilidad-calculada.md)
 - [ADR 0003 — Eventos con outbox y Kafka](docs/adr/0003-outbox-y-kafka.md)
 - [ADR 0004 — Separar en microservicios](docs/adr/0004-microservicios.md)
+- [ADR 0005 — Seña con Mercado Pago y vencimiento de reservas](docs/adr/0005-sena-y-pagos.md)
 
 Detalles:
 
@@ -129,4 +150,8 @@ Todo bajo `/api/v1` en el gateway (puerto 3000). Cada servicio documenta su part
 | GET/PUT | `/business/professionals/:id/schedule` | Owner o el propio staff |
 | GET/POST/DELETE | `/business/professionals/:id/exceptions` | Owner o el propio staff |
 | GET | `/business/agenda?from=&to=&professionalId=` | Owner o staff |
+| GET | `/business/metrics?from=&to=` | Owner o staff |
+| GET | `/bookings/:id` | Cliente o negocio |
+| GET | `/payments/booking/:bookingId` | Cliente o negocio |
+| POST | `/webhooks/mercadopago` | Firma de Mercado Pago |
 | PATCH | `/business/bookings/:id/attendance` | Owner o staff |

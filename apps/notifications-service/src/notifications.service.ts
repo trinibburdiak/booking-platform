@@ -7,7 +7,15 @@ import { NotificationType } from '../generated/prisma';
 import { MailService } from './mail.service';
 import { PrismaService } from './prisma.service';
 import { redisOptions } from './redis';
-import { BookingEmailData, cancelledEmail, confirmedEmail, reminderEmail, rescheduledEmail } from './templates';
+import {
+  BookingEmailData,
+  cancelledEmail,
+  confirmedEmail,
+  expiredEmail,
+  pendingPaymentEmail,
+  reminderEmail,
+  rescheduledEmail,
+} from './templates';
 
 export const REMINDERS_QUEUE = 'reminders';
 export const NOTIFICATIONS_CONSUMER = 'notifications-service';
@@ -62,8 +70,14 @@ export class NotificationsService implements OnModuleInit, OnApplicationBootstra
 
   async handle(event: BookingEvent) {
     await processOnce(this.prisma, NOTIFICATIONS_CONSUMER, event.eventId, async () => {
-      const { bookingId, start, cancelledBy } = event.payload;
+      const { bookingId, start, cancelledBy, reason } = event.payload;
       switch (event.eventType) {
+        case 'booking.created':
+          await this.email(bookingId, 'BOOKING_PENDING_PAYMENT');
+          break;
+        case 'booking.expired':
+          await this.email(bookingId, 'BOOKING_EXPIRED', false, reason);
+          break;
         case 'booking.confirmed':
           await this.email(bookingId, 'BOOKING_CONFIRMED');
           await this.scheduleReminder(bookingId, new Date(start));
@@ -101,15 +115,20 @@ export class NotificationsService implements OnModuleInit, OnApplicationBootstra
   }
 
   /** Un email que falla no rompe nada: queda registrado como FAILED. */
-  private async email(bookingId: string, type: NotificationType, byBusiness = false) {
+  private async email(bookingId: string, type: NotificationType, byBusiness = false, reason?: BookingEvent['payload']['reason']) {
     try {
-      await this.sendTo(await this.detail(bookingId), type, byBusiness);
+      await this.sendTo(await this.detail(bookingId), type, byBusiness, reason);
     } catch (e) {
       this.logger.error(`No se pudo enviar ${type} de ${bookingId}: ${(e as Error).message}`);
     }
   }
 
-  private async sendTo(b: InternalBookingDetail, type: NotificationType, byBusiness = false) {
+  private async sendTo(
+    b: InternalBookingDetail,
+    type: NotificationType,
+    byBusiness = false,
+    reason?: BookingEvent['payload']['reason'],
+  ) {
     const web = process.env.PUBLIC_WEB_URL ?? 'http://localhost:5180';
     const data: BookingEmailData = {
       clientName: b.client.fullName.split(' ')[0],
@@ -128,6 +147,13 @@ export class NotificationsService implements OnModuleInit, OnApplicationBootstra
       BOOKING_RESCHEDULED: () => rescheduledEmail(data),
       BOOKING_CANCELLED: () => cancelledEmail(data, byBusiness),
       BOOKING_REMINDER: () => reminderEmail(data),
+      BOOKING_PENDING_PAYMENT: () =>
+        pendingPaymentEmail(data, {
+          depositCents: b.service.depositCents,
+          expiresAt: new Date(b.expiresAt ?? b.start),
+          payUrl: `${web}/reservas/${b.id}`,
+        }),
+      BOOKING_EXPIRED: () => expiredEmail(data, reason),
     }[type]();
 
     try {

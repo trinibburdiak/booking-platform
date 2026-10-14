@@ -62,6 +62,7 @@ model Business {
   cancellationHours Int     @map("cancellation_hours")
   bookingWindowDays Int     @map("booking_window_days")
   minNoticeMinutes  Int     @map("min_notice_minutes")
+  requiresDeposit   Boolean @default(false) @map("requires_deposit")
 
   professionals Professional[]
   services      Service[]
@@ -169,6 +170,8 @@ model Booking {
   period         Unsupported("tstzrange")?
   status         BookingStatus
   priceCents     Int           @map("price_cents")
+  /// Seña a pagar (0 si el negocio no la exige). Mientras no se pague, el turno queda PENDING hasta expiresAt.
+  depositCents   Int           @default(0) @map("deposit_cents")
   cancelToken    String        @unique @map("cancel_token")
   idempotencyKey String        @map("idempotency_key")
   expiresAt      DateTime?     @map("expires_at") @db.Timestamptz(3)

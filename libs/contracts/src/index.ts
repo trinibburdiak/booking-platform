@@ -56,6 +56,8 @@ export const updateBusinessSchema = z.object({
   cancellationHours: z.number().int().min(0).max(720).optional(),
   bookingWindowDays: z.number().int().min(1).max(365).optional(),
   minNoticeMinutes: z.number().int().min(0).max(10080).optional(),
+  /** Si está activo, los servicios con seña quedan PENDING hasta que se pague. */
+  requiresDeposit: z.boolean().optional(),
 });
 export type UpdateBusinessInput = z.infer<typeof updateBusinessSchema>;
 
@@ -109,7 +111,15 @@ export interface PublicBusiness {
   timezone: string;
   address: string | null;
   cancellationHours: number;
-  services: { id: string; name: string; durationMin: number; priceCents: number; professionalIds: string[] }[];
+  requiresDeposit: boolean;
+  services: {
+    id: string;
+    name: string;
+    durationMin: number;
+    priceCents: number;
+    depositCents: number;
+    professionalIds: string[];
+  }[];
   professionals: { id: string; displayName: string }[];
 }
 
@@ -167,11 +177,26 @@ export interface BookingView {
   start: string;
   end: string;
   priceCents: number;
+  depositCents: number;
+  /** Solo en PENDING: hasta cuándo se puede pagar la seña. */
+  expiresAt: string | null;
   business: { id: string; slug: string; name: string; timezone: string; cancellationHours: number };
   service: { id: string; name: string; durationMin: number };
   professional: { id: string; displayName: string };
   client?: { id: string; fullName: string; email: string; phone: string | null };
   canClientCancel: boolean;
+}
+
+export type PaymentStatus = 'CREATED' | 'APPROVED' | 'REJECTED' | 'REFUNDED' | 'REFUND_PENDING';
+
+/** GET /payments/booking/:bookingId — la página de pago la consulta hasta que hay link. */
+export interface PaymentView {
+  id: string;
+  bookingId: string;
+  status: PaymentStatus;
+  amountCents: number;
+  checkoutUrl: string | null;
+  provider: 'mercadopago' | 'sandbox';
 }
 
 export interface ApiError {

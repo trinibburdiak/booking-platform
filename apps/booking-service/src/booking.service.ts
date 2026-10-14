@@ -21,6 +21,7 @@ import { envelope, OutboxRelay, outboxRecord } from '@turnos/kafka';
 import { randomBytes } from 'crypto';
 import { Booking, Business, Prisma, Professional, Service } from '../generated/prisma';
 import { PrismaService } from './prisma.service';
+import { depositMinutes, ExpirationQueue } from './expiration.queue';
 import { AvailabilityCache } from './redis.module';
 import { ACTIVE_STATUSES, AvailabilityService } from './availability.service';
 
@@ -46,6 +47,7 @@ export class BookingService {
     private readonly availability: AvailabilityService,
     private readonly cache: AvailabilityCache,
     private readonly relay: OutboxRelay,
+    private readonly expirations: ExpirationQueue,
   ) {}
 
   /**
@@ -63,27 +65,38 @@ export class BookingService {
     const { business, service } = await this.availability.resolveBusinessAndService(input.businessSlug, input.serviceId);
     const start = new Date(input.start);
     const slot = await this.findSlot(business, service, start, input.professionalId);
+    // Con seña: el turno ocupa el horario como PENDING y vence si no se paga a tiempo.
+    const deposit = business.requiresDeposit && service.depositCents > 0 ? service.depositCents : 0;
+    const expiresAt = deposit ? new Date(Date.now() + depositMinutes() * 60_000) : null;
 
     try {
       // El turno y su evento se guardan en la misma transacción (outbox).
       const booking = await this.prisma.$transaction(async (tx) => {
         const created = await tx.booking.create({
-        data: {
-          businessId: business.id,
-          professionalId: slot.professionalId,
-          serviceId: service.id,
-          clientId: user.id,
-          ...this.period(start, service),
-          status: 'CONFIRMED',
-          priceCents: service.priceCents,
-          cancelToken: randomBytes(32).toString('base64url'),
-          idempotencyKey,
-        },
-        include: withRelations,
+          data: {
+            businessId: business.id,
+            professionalId: slot.professionalId,
+            serviceId: service.id,
+            clientId: user.id,
+            ...this.period(start, service),
+            status: deposit ? 'PENDING' : 'CONFIRMED',
+            priceCents: service.priceCents,
+            depositCents: deposit,
+            expiresAt,
+            cancelToken: randomBytes(32).toString('base64url'),
+            idempotencyKey,
+          },
+          include: withRelations,
         });
-        await this.writeEvent(tx, 'booking.confirmed', created);
+        if (expiresAt) {
+          // payments-service crea el cobro; notifications manda el link de pago
+          await this.writeEvent(tx, 'booking.created', created, { depositCents: deposit, expiresAt: expiresAt.toISOString() });
+        } else {
+          await this.writeEvent(tx, 'booking.confirmed', created);
+        }
         return created;
       });
+      if (expiresAt) await this.expirations.schedule(booking.id, expiresAt);
       await this.afterCommit(booking);
       return this.toView(booking);
     } catch (e) {
@@ -98,6 +111,60 @@ export class BookingService {
       if (overlap) throw slotTaken();
       throw e;
     }
+  }
+
+  async getOne(user: AuthUser, id: string): Promise<BookingView> {
+    return this.toView(await this.loadForActor(user, id));
+  }
+
+  /** Job expire-pending o pago rechazado: si sigue PENDING, vence y libera el horario. */
+  async expirePending(bookingId: string, reason: 'NOT_PAID' | 'PAYMENT_REJECTED'): Promise<boolean> {
+    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId }, include: withRelations });
+    if (!booking || booking.status !== 'PENDING') return false;
+    const expired = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.booking.updateMany({ where: { id: bookingId, status: 'PENDING' }, data: { status: 'EXPIRED' } });
+      if (count) await this.writeEvent(tx, 'booking.expired', { ...booking, status: 'EXPIRED' }, { reason });
+      return count > 0;
+    });
+    if (expired) {
+      await this.expirations.cancel(bookingId);
+      await this.afterCommit({ ...booking, status: 'EXPIRED' });
+    }
+    return expired;
+  }
+
+  /**
+   * payment.approved: el turno PENDING pasa a CONFIRMED. Si el pago llegó tarde
+   * (ya venció o se canceló), se intenta recuperar el horario; si otro cliente lo
+   * tomó, el exclusion constraint lo impide y se pide la devolución de la seña.
+   */
+  async confirmPayment(bookingId: string): Promise<'confirmed' | 'refund' | 'ignored'> {
+    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId }, include: withRelations });
+    if (!booking || ['CONFIRMED', 'ATTENDED', 'NO_SHOW'].includes(booking.status)) return 'ignored';
+    if (booking.status !== 'CANCELLED') {
+      try {
+        const confirmed = await this.prisma.$transaction(async (tx) => {
+          const { count } = await tx.booking.updateMany({
+            where: { id: bookingId, status: { in: ['PENDING', 'EXPIRED'] } },
+            data: { status: 'CONFIRMED', expiresAt: null },
+          });
+          if (count) await this.writeEvent(tx, 'booking.confirmed', { ...booking, status: 'CONFIRMED' });
+          return count > 0;
+        });
+        if (confirmed) {
+          await this.expirations.cancel(bookingId);
+          await this.afterCommit({ ...booking, status: 'CONFIRMED' });
+          return 'confirmed';
+        }
+      } catch (e) {
+        if (!isOverlapViolation(e)) throw e;
+      }
+    }
+    await this.prisma.$transaction((tx) =>
+      this.writeEvent(tx, 'booking.refund_required', booking, { depositCents: booking.depositCents }),
+    );
+    this.relay.kick();
+    return 'refund';
   }
 
   async myBookings(user: AuthUser): Promise<BookingView[]> {
@@ -246,9 +313,10 @@ export class BookingService {
         timezone: b.business.timezone,
         cancellationHours: b.business.cancellationHours,
       },
-      service: { name: b.service.name },
+      service: { name: b.service.name, depositCents: b.depositCents },
       professional: { displayName: b.professional.displayName },
       client: { id: client.id, email: client.email, fullName: client.fullName },
+      expiresAt: b.expiresAt?.toISOString() ?? null,
     };
   }
 
@@ -365,6 +433,8 @@ export class BookingService {
       start: b.startsAt.toISOString(),
       end: b.endsAt.toISOString(),
       priceCents: b.priceCents,
+      depositCents: b.depositCents,
+      expiresAt: b.status === 'PENDING' ? (b.expiresAt?.toISOString() ?? null) : null,
       business: {
         id: b.business.id,
         slug: b.business.slug,

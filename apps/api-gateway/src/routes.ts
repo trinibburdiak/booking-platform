@@ -29,7 +29,7 @@ export const ROUTES: Route[] = [
 
   { method: 'POST', pattern: /^\/businesses$/, target: SERVICE_URLS.business, access: 'user' },
 
-  { pattern: /^\/business\/agenda$/, target: SERVICE_URLS.booking, access: 'tenant' },
+  { pattern: /^\/business\/(agenda|metrics)$/, target: SERVICE_URLS.booking, access: 'tenant' },
   { pattern: new RegExp(`^/business/bookings/${UUID}/attendance$`), target: SERVICE_URLS.booking, access: 'tenant' },
   { pattern: /^\/business(\/.*)?$/, target: SERVICE_URLS.business, access: 'tenant' },
 
@@ -37,6 +37,12 @@ export const ROUTES: Route[] = [
   { method: 'POST', pattern: /^\/bookings$/, target: SERVICE_URLS.booking, access: 'user', bucket: 'booking-write' },
   { pattern: /^\/bookings\/.+$/, target: SERVICE_URLS.booking, access: 'user', bucket: 'booking-write' },
   { pattern: /^\/me\/bookings$/, target: SERVICE_URLS.booking, access: 'user' },
+
+  { method: 'GET', pattern: /^\/payments\/booking\/[^/]+$/, target: SERVICE_URLS.payments, access: 'user' },
+  // Checkout simulado: lo abre el navegador sin token (el id del pago es un UUID imposible de adivinar)
+  { pattern: /^\/payments\/sandbox\/[^/]+(\/(approve|reject))?$/, target: SERVICE_URLS.payments, access: 'none', bucket: 'booking-write' },
+  // Mercado Pago llama acá; payments-service verifica la firma
+  { method: 'POST', pattern: /^\/webhooks\/mercadopago$/, target: SERVICE_URLS.payments, access: 'none' },
 ];
 
 export function matchRoute(method: string, path: string): Route | undefined {

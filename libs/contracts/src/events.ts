@@ -6,17 +6,21 @@
  * - auth.events     (clave: userId)     — los publica auth-service
  * - business.events (clave: businessId) — los publica business-service; misma clave = orden por negocio
  * - booking.events  (clave: bookingId)  — los publica booking-service; misma clave = orden por turno
+ * - payments.events (clave: bookingId)  — los publica payments-service
  */
 export const TOPICS = {
   auth: 'auth.events',
   business: 'business.events',
   booking: 'booking.events',
+  payments: 'payments.events',
 } as const;
 
 export interface EventEnvelope<T extends string = string, P = unknown> {
   eventId: string;
   eventType: T;
   occurredAt: string;
+  /** x-request-id de la request que originó el evento: permite seguirla por todos los servicios */
+  correlationId?: string;
   /** null en eventos que no son de un negocio (user.registered) */
   businessId: string | null;
   payload: P;
@@ -44,6 +48,7 @@ export interface BusinessState {
   cancellationHours: number;
   bookingWindowDays: number;
   minNoticeMinutes: number;
+  requiresDeposit: boolean;
 }
 
 export interface ServiceState {
@@ -88,6 +93,9 @@ export type BusinessEvent =
 // ---------- booking.events ----------
 
 export type BookingEventType =
+  | 'booking.created'
+  | 'booking.expired'
+  | 'booking.refund_required'
   | 'booking.confirmed'
   | 'booking.cancelled'
   | 'booking.rescheduled'
@@ -105,9 +113,28 @@ export interface BookingEventPayload {
   previous?: { professionalId: string; start: string };
   /** Solo en booking.cancelled */
   cancelledBy?: 'CLIENT' | 'BUSINESS';
+  /** booking.created (con seña): monto y vencimiento del pago */
+  depositCents?: number;
+  expiresAt?: string;
+  /** booking.expired: por qué venció */
+  reason?: 'NOT_PAID' | 'PAYMENT_REJECTED';
 }
 
 export type BookingEvent = EventEnvelope<BookingEventType, BookingEventPayload>;
+
+// ---------- payments.events ----------
+
+export interface PaymentPayload {
+  paymentId: string;
+  bookingId: string;
+  amountCents: number;
+  provider: 'mercadopago' | 'sandbox';
+}
+
+export type PaymentEvent =
+  | EventEnvelope<'payment.approved', PaymentPayload>
+  | EventEnvelope<'payment.failed', PaymentPayload & { reason: string }>
+  | EventEnvelope<'payment.refunded', PaymentPayload>;
 
 // ---------- APIs internas (servicio a servicio, no pasan por el gateway) ----------
 
@@ -124,7 +151,8 @@ export interface InternalBookingDetail {
   end: string;
   cancelToken: string;
   business: { id: string; slug: string; name: string; address: string | null; timezone: string; cancellationHours: number };
-  service: { name: string };
+  service: { name: string; depositCents: number };
   professional: { displayName: string };
   client: { id: string; email: string; fullName: string };
+  expiresAt: string | null;
 }

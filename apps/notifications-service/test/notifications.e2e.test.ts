@@ -65,9 +65,10 @@ function fakeBooking(daysAhead: number, overrides: Partial<InternalBookingDetail
     end: new Date(start.getTime() + 30 * 60_000).toISOString(),
     cancelToken: `tok-${id}`,
     business: { id: uuid(), slug: 'barberia', name: 'Barbería', address: 'Calle 1', timezone: 'America/Argentina/Cordoba', cancellationHours: 12 },
-    service: { name: 'Corte' },
+    service: { name: 'Corte', depositCents: 0 },
     professional: { displayName: 'Lucía' },
     client: { id: uuid(), email: `${id}@test.dev`, fullName: 'Ana Pérez' },
+    expiresAt: null,
     ...overrides,
   };
   bookings.set(id, b);
@@ -127,6 +128,18 @@ describe('emails y recordatorios', () => {
     await notifications.handle(eventFor(moved, 'booking.rescheduled'));
     expect((await notifications.reminders.getJob(b.id))!.data.start).toBe(moved.start);
     expect(await count(b.id, 'BOOKING_RESCHEDULED')).toBe(1);
+  });
+
+  it('con seña: email con link de pago; si vence, email de vencimiento', async () => {
+    const b = fakeBooking(3, { status: 'PENDING', service: { name: 'Corte', depositCents: 400000 }, expiresAt: new Date(Date.now() + 900_000).toISOString() });
+    await notifications.handle(eventFor(b, 'booking.created', { depositCents: 400000, expiresAt: b.expiresAt! }));
+    const pay = mail.outbox.find((m) => m.to === b.client.email && m.subject.startsWith('Pagá la seña'))!;
+    expect(pay.html).toContain(`/reservas/${b.id}`);
+    expect(pay.html).toMatch(/4\.000/);
+    expect(await notifications.reminders.getJob(b.id)).toBeUndefined(); // el recordatorio se programa recién al confirmar
+
+    await notifications.handle(eventFor(b, 'booking.expired', { reason: 'NOT_PAID' }));
+    expect(mail.outbox.find((m) => m.to === b.client.email && m.subject.startsWith('Se venció'))?.html).toContain('No recibimos el pago');
   });
 
   it('el worker manda el recordatorio y lo saltea si el turno cambió', async () => {

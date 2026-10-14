@@ -41,6 +41,7 @@ beforeAll(async () => {
   process.env.BUSINESS_URL = await stub('business');
   process.env.BOOKING_URL = await stub('booking');
   process.env.NOTIFICATIONS_URL = await stub('notifications');
+  process.env.PAYMENTS_URL = await stub('payments');
   infra = await startInfra({ serviceDir: join(__dirname, '..'), redis: true });
   ({ app, redis } = await createGatewayApp());
   jwt = app.get(JwtService);
@@ -61,6 +62,9 @@ describe('ruteo', () => {
     ['GET', '/api/v1/public/businesses/demo', 'business'],
     ['POST', '/api/v1/auth/login', 'auth'],
     ['POST', '/api/v1/bookings/cancel?token=abc', 'booking'],
+    ['GET', '/api/v1/payments/sandbox/123', 'payments'],
+    ['POST', '/api/v1/payments/sandbox/123/approve', 'payments'],
+    ['POST', '/api/v1/webhooks/mercadopago', 'payments'],
   ])('%s %s → %s', async (method, path, service) => {
     const res = await (method === 'GET' ? http().get(path) : http().post(path).send({ a: 1 })).expect(200);
     expect(res.body.service).toBe(service);
@@ -94,6 +98,7 @@ describe('autenticación y negocio', () => {
 
   it('rutas privadas: 401 sin token o con token inválido', async () => {
     await http().get('/api/v1/me/bookings').expect(401);
+    await http().get(`/api/v1/payments/booking/${uuid()}`).expect(401);
     await http().get('/api/v1/me/bookings').set('Authorization', 'Bearer basura').expect(401);
   });
 
@@ -121,6 +126,8 @@ describe('autenticación y negocio', () => {
 
     const agenda = await http().get('/api/v1/business/agenda').set('Authorization', auth).set('X-Business-Id', mine).expect(200);
     expect(agenda.body.service).toBe('booking');
+    const metrics = await http().get('/api/v1/business/metrics').set('Authorization', auth).set('X-Business-Id', mine).expect(200);
+    expect(metrics.body.service).toBe('booking');
   });
 
   it('si la membresía es nueva (no está en caché), la vuelve a pedir', async () => {

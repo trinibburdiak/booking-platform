@@ -2,7 +2,7 @@ import type { BookingView, PublicBusiness } from '@turnos/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DateTime } from 'luxon';
 import { useMemo, useState } from 'react';
-import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, errorCode, errorMessage } from '../../shared/lib/api';
 import { formatDateLong, formatPrice, formatTime } from '../../shared/lib/format';
 import { Alert, Spinner } from '../../shared/ui';
@@ -70,6 +70,7 @@ export function BusinessPage() {
                 <p className="text-sm text-stone-600">
                   {s.durationMin} min · {formatPrice(s.priceCents)}
                 </p>
+                {s.depositCents > 0 && <p className="text-xs text-amber-700">Seña de {formatPrice(s.depositCents)}</p>}
               </button>
             ))}
           </div>
@@ -153,6 +154,7 @@ function Confirm(props: {
   const { business, serviceId, professionalId, start, onSlotTaken } = props;
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const qc = useQueryClient();
 
   // Se genera al abrir la confirmación: un doble click no reserva dos veces.
@@ -167,7 +169,11 @@ function Confirm(props: {
           { headers: { 'Idempotency-Key': idempotencyKey } },
         )
       ).data,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['my-bookings'] }),
+    onSuccess: (b) => {
+      qc.invalidateQueries({ queryKey: ['my-bookings'] });
+      // Con seña, el turno queda pendiente: se sigue en la página de pago
+      if (b.status === 'PENDING') navigate(`/reservas/${b.id}`);
+    },
     onError: (e) => {
       if (errorCode(e) === 'SLOT_TAKEN') {
         qc.invalidateQueries({ queryKey: ['availability'] });
@@ -180,7 +186,7 @@ function Confirm(props: {
   const service = business.services.find((s) => s.id === serviceId)!;
   const next = encodeURIComponent(location.pathname + location.search);
 
-  if (mutation.isSuccess) {
+  if (mutation.isSuccess && mutation.data.status !== 'PENDING') {
     const b = mutation.data;
     return (
       <div className="card border-brand-100 bg-brand-50">
@@ -213,11 +219,17 @@ function Confirm(props: {
         </dd>
         <dt className="text-stone-500">Precio</dt>
         <dd>{formatPrice(service.priceCents)}</dd>
+        {service.depositCents > 0 && (
+          <>
+            <dt className="text-stone-500">Seña</dt>
+            <dd>{formatPrice(service.depositCents)}, se paga ahora para confirmar</dd>
+          </>
+        )}
       </dl>
       {mutation.isError && errorCode(mutation.error) !== 'SLOT_TAKEN' && <Alert>{errorMessage(mutation.error)}</Alert>}
       {user ? (
         <button className="btn-primary w-full" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
-          {mutation.isPending ? 'Reservando…' : 'Confirmar reserva'}
+          {mutation.isPending ? 'Reservando…' : service.depositCents > 0 ? 'Reservar y pagar la seña' : 'Confirmar reserva'}
         </button>
       ) : (
         <div className="flex flex-col gap-2 sm:flex-row">

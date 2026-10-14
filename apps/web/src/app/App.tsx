@@ -4,7 +4,9 @@ import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } fr
 import { LoginPage, RegisterPage } from '../features/auth/AuthPages';
 import { AuthProvider, useAuth } from '../features/auth/useAuth';
 import { AgendaPage } from '../features/dashboard/AgendaPage';
+import { MetricsPage } from '../features/dashboard/MetricsPage';
 import { PanelLayout } from '../features/dashboard/PanelLayout';
+import { BookingPaymentPage } from '../features/my-bookings/BookingPaymentPage';
 import { CancelByTokenPage, MyBookingsPage } from '../features/my-bookings/MyBookingsPage';
 import { CreateBusinessWizard } from '../features/onboarding/CreateBusinessWizard';
 import { BusinessPage } from '../features/public-booking/BusinessPage';
@@ -30,9 +32,11 @@ export function App() {
               <Route path="/registro" element={<RegisterPage />} />
               <Route path="/cancelar" element={<CancelByTokenPage />} />
               <Route path="/mis-turnos" element={<RequireAuth><MyBookingsPage /></RequireAuth>} />
+              <Route path="/reservas/:id" element={<RequireAuth><BookingPaymentPage /></RequireAuth>} />
               <Route path="/panel/nuevo" element={<RequireAuth><CreateBusinessWizard /></RequireAuth>} />
               <Route path="/panel" element={<RequireAuth><PanelLayout /></RequireAuth>}>
                 <Route index element={<AgendaPage />} />
+                <Route path="ausentismo" element={<MetricsPage />} />
                 <Route path="servicios" element={<ServicesPage />} />
                 <Route path="profesionales" element={<ProfessionalsPage />} />
                 <Route path="configuracion" element={<BusinessSettings />} />

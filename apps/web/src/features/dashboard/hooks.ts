@@ -11,6 +11,7 @@ export interface BusinessSettings {
   cancellationHours: number;
   bookingWindowDays: number;
   minNoticeMinutes: number;
+  requiresDeposit: boolean;
 }
 
 export interface ServiceRow {

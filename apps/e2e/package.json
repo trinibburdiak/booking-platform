@@ -1,0 +1,14 @@
+{
+  "name": "@turnos/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "@types/node": "22.13.10",
+    "typescript": "5.6.3"
+  }
+}

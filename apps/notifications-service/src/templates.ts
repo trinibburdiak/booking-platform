@@ -65,3 +65,25 @@ export const reminderEmail = (d: BookingEmailData) => ({
   subject: `Recordatorio: mañana tenés turno en ${d.businessName}`,
   html: layout(`Te esperamos, ${esc(d.clientName)}`, details(d) + cancelNote(d)),
 });
+
+const money = (cents: number) =>
+  new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(cents / 100);
+
+export const pendingPaymentEmail = (d: BookingEmailData, p: { depositCents: number; expiresAt: Date; payUrl: string }) => {
+  const until = DateTime.fromJSDate(p.expiresAt, { zone: d.timezone }).toFormat('HH:mm');
+  return {
+    subject: `Pagá la seña para confirmar tu turno en ${d.businessName}`,
+    html: layout(
+      `Te guardamos el turno, ${esc(d.clientName)}`,
+      `<p>Para confirmarlo, pagá la seña de <b>${money(p.depositCents)}</b> antes de las <b>${until} h</b>. Si no, el horario se libera.</p>${details(d)}${button(p.payUrl, 'Pagar la seña')}`,
+    ),
+  };
+};
+
+export const expiredEmail = (d: BookingEmailData, reason: 'NOT_PAID' | 'PAYMENT_REJECTED' | undefined) => ({
+  subject: `Se venció tu reserva en ${d.businessName}`,
+  html: layout(
+    'Tu reserva se venció',
+    `<p>${reason === 'PAYMENT_REJECTED' ? 'El pago de la seña fue rechazado' : 'No recibimos el pago de la seña a tiempo'}, así que liberamos el horario.</p>${details(d)}${button(d.businessUrl, 'Reservar otro turno')}`,
+  ),
+});

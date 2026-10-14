@@ -45,7 +45,7 @@ export async function registerClient(ctx: Ctx, fullName = 'Cliente') {
  * Un negocio con un profesional que atiende todos los días de 08:00 a 20:00,
  * sin aviso mínimo y un servicio de 30 min, cargado en la réplica por eventos.
  */
-export async function createBusiness(ctx: Ctx, opts: { cancellationHours?: number } = {}) {
+export async function createBusiness(ctx: Ctx, opts: { cancellationHours?: number; depositCents?: number } = {}) {
   const businessId = uuid();
   const serviceId = uuid();
   const professionalId = uuid();
@@ -60,13 +60,14 @@ export async function createBusiness(ctx: Ctx, opts: { cancellationHours?: numbe
     cancellationHours: opts.cancellationHours ?? 0,
     bookingWindowDays: 30,
     minNoticeMinutes: 0,
+    requiresDeposit: !!opts.depositCents,
   };
   const ev = <E extends BusinessEvent>(type: E['eventType'], payload: E['payload']) =>
     feed(ctx, envelope(type, businessId, payload) as BusinessEvent);
 
   await ev('business.created', { business, ownerId });
   await ev('service.changed', {
-    service: { id: serviceId, businessId, name: 'Corte', durationMin: 30, bufferMin: 0, priceCents: 1000, depositCents: 0, active: true },
+    service: { id: serviceId, businessId, name: 'Corte', durationMin: 30, bufferMin: 0, priceCents: 1000, depositCents: opts.depositCents ?? 0, active: true },
   });
   await ev('professional.changed', {
     professional: { id: professionalId, businessId, userId: null, displayName: 'Ana', active: true, serviceIds: [serviceId] },
