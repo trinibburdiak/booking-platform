@@ -147,6 +147,26 @@ describe('autenticación y negocio', () => {
   });
 });
 
+describe('rate limiting de reservas', () => {
+  it('consultar un turno (la página de pago lo hace cada 2 s) no gasta el límite de reservas', async () => {
+    process.env.RATE_LIMIT_IN_TESTS = '1';
+    try {
+      const auth = `Bearer ${await tokenFor(uuid())}`;
+      for (let i = 0; i < 40; i++) {
+        await http().get(`/api/v1/bookings/${uuid()}`).set('Authorization', auth).set('X-Forwarded-For', '10.0.0.7').expect(200);
+      }
+      const writes = [];
+      for (let i = 0; i < 31; i++) {
+        writes.push((await http().post('/api/v1/bookings').set('Authorization', auth).set('X-Forwarded-For', '10.0.0.7').send({})).status);
+      }
+      expect(writes.slice(0, 30).every((s) => s === 200)).toBe(true);
+      expect(writes[30]).toBe(429);
+    } finally {
+      delete process.env.RATE_LIMIT_IN_TESTS;
+    }
+  });
+});
+
 describe('rate limiting', () => {
   it('limita login a 20 por minuto por IP', async () => {
     process.env.RATE_LIMIT_IN_TESTS = '1';

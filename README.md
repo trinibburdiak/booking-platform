@@ -67,6 +67,17 @@ MP_NOTIFICATION_URL=https://<túnel>/api/v1/webhooks/mercadopago   # URL públic
 
 Cada servicio escribe logs JSON (Pino). El gateway asigna un `x-request-id` que se propaga a las llamadas internas y se guarda como `correlationId` en los eventos; los consumidores de Kafka lo restauran. Buscar ese id en los logs muestra una reserva de punta a punta, del gateway al email. `LOG_PRETTY=true` en el `.env` los hace legibles en desarrollo.
 
+## Deploy
+
+Un servidor con Docker Compose: Postgres, Redis, Kafka, los seis servicios y Caddy (front + HTTPS automático). Cada merge a `main` con CI en verde se despliega solo. Paso a paso, costos y operación en [docs/deploy.md](docs/deploy.md).
+
+Para probar la configuración de producción en tu máquina:
+
+```bash
+cp infra/.env.prod.example infra/.env.prod   # completar; SITE_ADDRESS=:80 y PUBLIC_URL=http://localhost:8088 para probar en local
+HTTP_PORT_PUBLIC=8088 docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod up -d --build
+```
+
 ## Tests
 
 ```bash

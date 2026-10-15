@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/generated
+**/.env
+**/*.log
+**/*.tsbuildinfo
+.git
+.github
+.claude
+apps/e2e/playwright-report
+apps/e2e/test-results
+docs

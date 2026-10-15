@@ -22,6 +22,12 @@ async function call(method, path, { token, businessId, body, idempotencyKey, ok 
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 429) {
+    // El gateway limita reservas y logins por minuto: esperar y reintentar
+    console.log('Límite de requests alcanzado, esperando un minuto…');
+    await sleep(61_000);
+    return call(method, path, { token, businessId, body, idempotencyKey, ok });
+  }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!ok.includes(res.status)) throw new Error(`${method} ${path} → ${res.status}: ${JSON.stringify(data)}`);
   return { status: res.status, data };

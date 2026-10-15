@@ -35,12 +35,15 @@ export const ROUTES: Route[] = [
 
   { method: 'POST', pattern: /^\/bookings\/cancel$/, target: SERVICE_URLS.booking, access: 'none', bucket: 'booking-write' },
   { method: 'POST', pattern: /^\/bookings$/, target: SERVICE_URLS.booking, access: 'user', bucket: 'booking-write' },
-  { pattern: /^\/bookings\/.+$/, target: SERVICE_URLS.booking, access: 'user', bucket: 'booking-write' },
+  // Solo las escrituras cuentan para el límite estricto: la página de pago consulta GET /bookings/:id cada 2 s
+  { method: 'POST', pattern: /^\/bookings\/.+$/, target: SERVICE_URLS.booking, access: 'user', bucket: 'booking-write' },
+  { method: 'GET', pattern: /^\/bookings\/[^/]+$/, target: SERVICE_URLS.booking, access: 'user' },
   { pattern: /^\/me\/bookings$/, target: SERVICE_URLS.booking, access: 'user' },
 
   { method: 'GET', pattern: /^\/payments\/booking\/[^/]+$/, target: SERVICE_URLS.payments, access: 'user' },
   // Checkout simulado: lo abre el navegador sin token (el id del pago es un UUID imposible de adivinar)
-  { pattern: /^\/payments\/sandbox\/[^/]+(\/(approve|reject))?$/, target: SERVICE_URLS.payments, access: 'none', bucket: 'booking-write' },
+  { method: 'GET', pattern: /^\/payments\/sandbox\/[^/]+$/, target: SERVICE_URLS.payments, access: 'none' },
+  { method: 'POST', pattern: /^\/payments\/sandbox\/[^/]+\/(approve|reject)$/, target: SERVICE_URLS.payments, access: 'none', bucket: 'booking-write' },
   // Mercado Pago llama acá; payments-service verifica la firma
   { method: 'POST', pattern: /^\/webhooks\/mercadopago$/, target: SERVICE_URLS.payments, access: 'none' },
 ];

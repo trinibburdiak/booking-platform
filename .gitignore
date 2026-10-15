@@ -8,3 +8,4 @@ coverage
 generated
 playwright-report
 test-results
+infra/.env.prod

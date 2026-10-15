@@ -21,6 +21,11 @@ export async function createGatewayApp(): Promise<{ app: INestApplication; redis
   app.useLogger(app.get(Logger));
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380');
   const socketProxy = createSocketProxy();
+  // Detrás de Caddy (u otro proxy): la IP real viene en X-Forwarded-For. Sin esto,
+  // el rate limiting vería a todos los usuarios con la IP del proxy.
+  if (process.env.TRUST_PROXY) {
+    app.getHttpAdapter().getInstance().set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+  }
 
   // Un log por request proxeada, con el x-request-id que después siguen todos los servicios
   app.use(

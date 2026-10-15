@@ -1,0 +1,27 @@
+# Entrada pública: sirve el front compilado y reenvía la API y el WebSocket al gateway.
+# Con un dominio en SITE_ADDRESS, Caddy saca y renueva el certificado HTTPS solo.
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy gateway:3000
+	}
+	handle /socket.io/* {
+		reverse_proxy gateway:3000
+	}
+
+	handle {
+		root * /srv
+		# SPA: cualquier ruta del front devuelve index.html
+		try_files {path} /index.html
+		file_server
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header -Server
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			X-Frame-Options DENY
+		}
+	}
+}
