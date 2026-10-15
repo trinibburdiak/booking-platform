@@ -22,7 +22,7 @@ Internet ──443──► Caddy ──► front (estático)
 ## 1. Subir el código a GitHub
 
 ```bash
-git remote add origin git@github.com:<usuario>/turnos.git
+git remote add origin https://github.com/trinibburdiak/booking-platform.git
 git push -u origin main
 ```
 
@@ -31,8 +31,8 @@ git push -u origin main
 Con el servidor creado y el dominio apuntando a su IP, entrar por SSH como root:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/<usuario>/turnos/main/infra/deploy/setup-server.sh
-REPO=https://github.com/<usuario>/turnos.git sh setup-server.sh
+curl -fsSLO https://raw.githubusercontent.com/trinibburdiak/booking-platform/main/infra/deploy/setup-server.sh
+REPO=https://github.com/trinibburdiak/booking-platform.git sh setup-server.sh
 ```
 
 El script instala Docker, agrega 2 GB de swap, deja abiertos solo los puertos 22, 80 y 443, crea el usuario `deploy`, clona el repo en `/opt/turnos` y programa un backup diario de Postgres. Si el repo es privado, agregá una deploy key de solo lectura en GitHub y cloná por SSH.

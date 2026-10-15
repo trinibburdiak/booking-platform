@@ -1,8 +1,8 @@
 #!/bin/sh
 # Prepara un servidor Ubuntu 24.04 recién creado para correr Turnos.
-# Uso (como root en el servidor):  REPO=https://github.com/<usuario>/turnos.git sh setup-server.sh
+# Uso (como root en el servidor):  REPO=https://github.com/trinibburdiak/booking-platform.git sh setup-server.sh
 set -e
-: "${REPO:?Pasá REPO=https://github.com/<usuario>/turnos.git}"
+: "${REPO:?Pasá REPO=https://github.com/trinibburdiak/booking-platform.git}"
 
 echo "== Docker"
 if ! command -v docker >/dev/null; then
